@@ -4,18 +4,18 @@
 [![rank](https://make.fun/badge/best-spot-the-difference-game-20261121-0451/Ryukein19/spotdiff-game/rank.svg)](https://make.fun/bounty/best-spot-the-difference-game-20261121-0451?utm_source=github&utm_medium=readme&utm_campaign=best-spot-the-difference-game-20261121-0451)
 [![reward](https://make.fun/badge/best-spot-the-difference-game-20261121-0451/Ryukein19/spotdiff-game/reward.svg)](https://make.fun/bounty/best-spot-the-difference-game-20261121-0451?utm_source=github&utm_medium=readme&utm_campaign=best-spot-the-difference-game-20261121-0451)
 
-**Double Take** is an original spot-the-difference game: two near-identical pictures side by side, 48 differences hidden across 6 hand-drawn scenes. All art is drawn procedurally in code (canvas 2D, flat vector style) — no images, no network, plays fully offline in a desktop browser with mouse + keyboard.
+**Double Take** is an original spot-the-difference game: two near-identical pictures side by side, 48 differences hidden across 6 hand-drawn scenes full of people. All art is drawn procedurally in code (canvas 2D, flat vector style with real depth — layered foreground / midground / background, ground shadows, perspective scale, overlapping figures) — no images, no network, plays fully offline in a desktop browser with mouse + keyboard.
 
 ## The scenes
 
 | # | Scene | Differences |
 |---|-------|-------------|
-| 1 | Coral Reef Dive — underwater | 8 |
-| 2 | Winter Village — snowy night | 8 |
-| 3 | Jungle Temple — ancient ruins | 8 |
-| 4 | Desert Oasis — golden dunes | 8 |
-| 5 | Moon Base — lunar surface | 8 |
-| 6 | Botanical Greenhouse — glass dome | 8 |
+| 1 | Street Market — busy stalls, shoppers & vendors | 8 |
+| 2 | Beach Day — swimmers, sunbathers & a lifeguard | 8 |
+| 3 | City Park — picnics, swings, joggers & dog walkers | 8 |
+| 4 | Train Station — travelers, a conductor & a ticket queue | 8 |
+| 5 | Night Festival — dancers, musicians & lanterns | 8 |
+| 6 | Cozy Café — diners, a barista & a waiter | 8 |
 
 **48 differences in total**, difficulty rising across the scenes. Every difference is fair — something removed, recoloured, moved, resized, flipped, or added — visible when pointed at, but not obvious at a glance.
 

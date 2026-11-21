@@ -1,37 +1,44 @@
-// Spot the Difference — scene art. Every scene is drawn procedurally (flat vector
-// style, canvas 2D, no images). A scene's draw(ctx, variant, W, H) draws the whole
-// picture; variant 0 is the LEFT (original) panel, variant 1 is the RIGHT (changed)
-// panel. Each difference is one small conditional inside draw() plus one entry in
-// the scene's diffs list (id, type, hit x/y/radius). Fair differences only: removed,
+// Spot the Difference v2 — scene art. Every scene is drawn procedurally (canvas 2D,
+// no images, no WebGL). The art now has DEPTH: each scene is built back-to-front in
+// three planes (background / midground / foreground), figures further away are drawn
+// smaller, every person and object casts a soft ground shadow, and foreground figures
+// overlap the midground — so the picture reads as a place with space, not a flat card.
+// PEOPLE are the subject now: every scene is full of original flat-vector figures
+// (head, body, limbs, clothing, a distinguishing hat / bag / uniform), and at least
+// half of each scene's differences are about a person (hat, bag, pose, position,
+// clothing, gesture). A scene's draw(ctx, variant, W, H) draws the whole picture;
+// variant 0 is the LEFT (original) panel, variant 1 the RIGHT (changed) panel.
+// Each difference is one small conditional inside draw() plus one entry in the
+// scene's diffs list (id, type, hit x/y/radius). Fair differences only: removed,
 // recoloured, moved, resized, flipped, added.
 
 // ---- tiny drawing helpers ----
-export function circle(ctx, x, y, r, fill, stroke, lw) {
+function circle(ctx, x, y, r, fill, stroke, lw) {
   ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2);
   if (fill) { ctx.fillStyle = fill; ctx.fill(); }
   if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = lw || 2; ctx.stroke(); }
 }
-export function ellipse(ctx, x, y, rx, ry, fill, stroke, lw) {
+function ellipse(ctx, x, y, rx, ry, fill, stroke, lw) {
   ctx.beginPath(); ctx.ellipse(x, y, rx, ry, 0, 0, Math.PI * 2);
   if (fill) { ctx.fillStyle = fill; ctx.fill(); }
   if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = lw || 2; ctx.stroke(); }
 }
-export function rect(ctx, x, y, w, h, fill, stroke, lw) {
+function rect(ctx, x, y, w, h, fill, stroke, lw) {
   if (fill) { ctx.fillStyle = fill; ctx.fillRect(x, y, w, h); }
   if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = lw || 2; ctx.strokeRect(x, y, w, h); }
 }
-export function poly(ctx, pts, fill, stroke, lw) {
+function poly(ctx, pts, fill, stroke, lw) {
   ctx.beginPath(); ctx.moveTo(pts[0][0], pts[0][1]);
   for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
   ctx.closePath();
   if (fill) { ctx.fillStyle = fill; ctx.fill(); }
   if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = lw || 2; ctx.stroke(); }
 }
-export function line(ctx, x1, y1, x2, y2, color, w) {
+function line(ctx, x1, y1, x2, y2, color, w) {
   ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2);
   ctx.strokeStyle = color; ctx.lineWidth = w || 2; ctx.stroke();
 }
-export function star(ctx, x, y, r, fill, points) {
+function star(ctx, x, y, r, fill, points) {
   const n = points || 5; ctx.beginPath();
   for (let i = 0; i < n * 2; i++) {
     const rr = i % 2 === 0 ? r : r * 0.45;
@@ -41,7 +48,7 @@ export function star(ctx, x, y, r, fill, points) {
   }
   ctx.closePath(); ctx.fillStyle = fill; ctx.fill();
 }
-export function text(ctx, s, x, y, size, color, align, weight) {
+function text(ctx, s, x, y, size, color, align, weight) {
   ctx.font = (weight || '700') + ' ' + size + 'px system-ui, sans-serif';
   ctx.fillStyle = color; ctx.textAlign = align || 'center'; ctx.textBaseline = 'middle';
   ctx.fillText(s, x, y);
@@ -52,542 +59,540 @@ function grad(ctx, x0, y0, x1, y1, stops) {
   return g;
 }
 
-// A fish drawn facing dir (1 = right, -1 = left), body colour c.
-function fish(ctx, x, y, s, c, dir) {
-  ctx.save(); ctx.translate(x, y); ctx.scale(dir * s, s);
-  ellipse(ctx, 0, 0, 26, 14, c);
-  poly(ctx, [[-24, 0], [-36, -11], [-36, 11]], c);
-  circle(ctx, 12, -3, 3.4, '#fff'); circle(ctx, 13, -3, 1.7, '#222');
-  ctx.beginPath(); ctx.moveTo(-4, -12); ctx.quadraticCurveTo(2, -22, 10, -12); ctx.closePath();
-  ctx.fillStyle = c; ctx.fill();
-  ctx.restore();
+// ---- depth helpers ----
+// A soft ground shadow under a person or object: the single strongest depth cue.
+// rx grows with the figure's scale, so near figures cast wide shadows.
+function shadow(ctx, x, y, rx, ry) {
+  ellipse(ctx, x, y, rx, ry || rx * 0.32, 'rgba(0,0,0,0.20)');
 }
-// A pine tree: trunk + 3 snowy tiers.
-function pine(ctx, x, y, s, snow) {
-  ctx.save(); ctx.translate(x, y); ctx.scale(s, s);
-  rect(ctx, -5, 28, 10, 18, '#7a4a21');
-  poly(ctx, [[0, -52], [-30, 6], [30, 6]], '#1d7a3d');
-  poly(ctx, [[0, -34], [-24, 18], [24, 18]], '#1d7a3d');
-  poly(ctx, [[0, -16], [-18, 30], [18, 30]], '#1d7a3d');
-  if (snow) {
-    poly(ctx, [[0, -52], [-12, -28], [12, -28]], '#fff');
-    poly(ctx, [[0, -34], [-10, -14], [10, -14]], '#fff');
-    poly(ctx, [[0, -16], [-8, 2], [8, 2]], '#fff');
+// A ground plane with a vertical gradient: lighter far away, darker close to the
+// viewer. Call with the ground's top edge (horizon) and fill to the panel bottom.
+function ground(ctx, y0, W, H, cFar, cNear) {
+  ctx.fillStyle = grad(ctx, 0, y0, 0, H, [[0, cFar], [1, cNear]]);
+  ctx.fillRect(0, y0, W, H - y0);
+}
+
+// ---- people ----
+// An original person figure, drawn in code. o: {x, y (feet), s (scale), skin,
+// shirt, pants, hair, hat, dress, bag, pose, dir}.
+// Poses: stand, walk, wave, point, carry, sit. Scale s IS the depth cue:
+// background figures are small (0.6), midground ~1.0, foreground ~1.2.
+// Draw order inside the figure is back-to-front: shadow, legs, torso, arms,
+// head, hair/hat, bag — so limbs never cover the face.
+function person(ctx, o) {
+  const s = o.s || 1, dir = o.dir || 1;
+  const skin = o.skin || '#f2c89b', shirt = o.shirt || '#e74c3c', pants = o.pants || '#2e4a6b';
+  ctx.save(); ctx.translate(o.x, o.y); ctx.scale(s, s);
+  shadow(ctx, 0, 2, 20, 6);
+  // legs, or a dress with small legs under it
+  if (o.dress) {
+    poly(ctx, [[-11, -52], [11, -52], [16, -8], [-16, -8]], o.dress);
+    line(ctx, -6, -10, -7, 0, skin, 6); line(ctx, 6, -10, 7, 0, skin, 6);
+  } else if (o.pose === 'sit') {
+    line(ctx, -4, -26, -15, -10, pants, 7); line(ctx, 4, -26, 15, -10, pants, 7);
+    line(ctx, -15, -10, -15, 0, pants, 6); line(ctx, 15, -10, 15, 0, pants, 6);
+  } else if (o.pose === 'walk') {
+    line(ctx, -3, -26, -13, 0, pants, 7); line(ctx, 3, -26, 13, -3, pants, 7);
+  } else {
+    line(ctx, -4, -26, -7, 0, pants, 7); line(ctx, 4, -26, 7, 0, pants, 7);
+  }
+  // torso
+  ellipse(ctx, 0, -38, 12, 15, shirt);
+  // arms by pose
+  if (o.pose === 'wave') {
+    line(ctx, -10, -48, -16, -28, shirt, 6);
+    line(ctx, 10, -48, 22, -68, shirt, 6);
+    circle(ctx, 23, -69, 4, skin);
+  } else if (o.pose === 'point') {
+    line(ctx, -10, -48, -15, -28, shirt, 6);
+    line(ctx, 10, -48, dir * 30, -48, shirt, 6);
+    circle(ctx, dir * 31, -48, 3.5, skin);
+  } else if (o.pose === 'carry') {
+    line(ctx, -10, -48, dir * 14, -34, shirt, 6);
+    line(ctx, 10, -48, dir * 16, -34, shirt, 6);
+  } else if (o.pose === 'sit') {
+    line(ctx, -10, -48, -14, -30, shirt, 6);
+    line(ctx, 10, -48, 14, -30, shirt, 6);
+  } else if (o.pose === 'walk') {
+    line(ctx, -10, -48, -16, -30, shirt, 6);
+    line(ctx, 10, -48, 16, -34, shirt, 6);
+  } else {
+    line(ctx, -10, -48, -14, -28, shirt, 6);
+    line(ctx, 10, -48, 14, -28, shirt, 6);
+  }
+  // head + face (eyes look toward dir)
+  circle(ctx, 0, -62, 10, skin);
+  circle(ctx, dir * 3, -63, 1.6, '#222'); circle(ctx, dir * 7, -63, 1.6, '#222');
+  // hair: a cap of colour over the top of the head
+  if (o.hair) {
+    ctx.fillStyle = o.hair;
+    ctx.beginPath(); ctx.arc(0, -64, 10, Math.PI, 0); ctx.closePath(); ctx.fill();
+  }
+  // hat: brim + dome
+  if (o.hat) {
+    ellipse(ctx, 0, -70, 13, 4, o.hat);
+    ctx.fillStyle = o.hat;
+    ctx.beginPath(); ctx.arc(0, -71, 8, Math.PI, 0); ctx.closePath(); ctx.fill();
+  }
+  // shoulder bag
+  if (o.bag) {
+    rect(ctx, dir * 12, -32, 10, 14, o.bag);
+    line(ctx, dir * 12, -32, dir * 8, -48, '#7a4a21', 2);
   }
   ctx.restore();
 }
-// A branching coral in colour c at (x, y), scale s.
-function coral(ctx, x, y, s, c) {
+
+// A small cat sitting: body, head, ears, tail. Used as an "added" difference.
+function cat(ctx, x, y, s, c) {
   ctx.save(); ctx.translate(x, y); ctx.scale(s, s);
-  ctx.strokeStyle = c; ctx.lineCap = 'round';
-  const branch = (x0, y0, x1, y1, w) => {
-    ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.lineWidth = w; ctx.stroke();
-  };
-  branch(0, 0, 0, -34, 7); branch(0, -14, -20, -34, 5); branch(0, -22, 18, -44, 5);
-  branch(-20, -34, -30, -50, 4); branch(-20, -34, -8, -48, 4);
-  branch(18, -44, 30, -58, 4); branch(18, -44, 8, -60, 4);
-  branch(0, -34, 2, -56, 5); branch(2, -56, -8, -70, 3); branch(2, -56, 12, -72, 3);
+  shadow(ctx, 0, 2, 12, 4);
+  ellipse(ctx, 0, -8, 12, 9, c);
+  circle(ctx, 8, -18, 7, c);
+  poly(ctx, [[3, -23], [5, -30], [8, -23]], c); poly(ctx, [[10, -23], [12, -30], [14, -23]], c);
+  ctx.beginPath(); ctx.moveTo(-12, -4); ctx.quadraticCurveTo(-22, -6, -20, -18);
+  ctx.strokeStyle = c; ctx.lineWidth = 4; ctx.stroke();
   ctx.restore();
 }
-// A wavy seaweed strand.
-function seaweed(ctx, x, y, h, c, phase) {
-  ctx.save(); ctx.translate(x, y); ctx.strokeStyle = c; ctx.lineWidth = 7; ctx.lineCap = 'round';
-  ctx.beginPath(); ctx.moveTo(0, 0);
-  ctx.bezierCurveTo(10 * Math.sin(phase), -h * 0.3, -10 * Math.sin(phase), -h * 0.6, 4, -h);
-  ctx.stroke(); ctx.restore();
-}
 
-// ---- Scene 1: Coral Reef Dive ----
-function drawReef(ctx, v, W, H) {
-  // water
-  ctx.fillStyle = grad(ctx, 0, 0, 0, H, [[0, '#0b5fa5'], [0.55, '#0e7d8c'], [1, '#0f8f7a']]);
+// ---- Scene 1: Street Market ----
+function drawMarket(ctx, v, W, H) {
+  // morning sky
+  ctx.fillStyle = grad(ctx, 0, 0, 0, H, [[0, '#ffe3a1'], [0.5, '#ffd98a'], [1, '#f7c978']]);
   ctx.fillRect(0, 0, W, H);
-  // light rays
-  ctx.fillStyle = 'rgba(255,255,255,0.10)';
-  poly(ctx, [[90, 0], [130, 0], [60, H], [20, H]], 'rgba(255,255,255,0.10)');
-  poly(ctx, [[300, 0], [330, 0], [290, H], [250, H]], 'rgba(255,255,255,0.08)');
-  poly(ctx, [[480, 0], [505, 0], [520, H], [485, H]], 'rgba(255,255,255,0.09)');
-  // sandy floor
-  ctx.fillStyle = '#e8cf9a'; ctx.beginPath(); ctx.moveTo(0, 345);
-  ctx.bezierCurveTo(150, 325, 300, 355, 460, 338); ctx.bezierCurveTo(540, 330, 590, 345, W, 340);
-  ctx.lineTo(W, H); ctx.lineTo(0, H); ctx.closePath(); ctx.fill();
-  circle(ctx, 60, 372, 5, '#d9b77c'); circle(ctx, 560, 368, 6, '#d9b77c');
-  // corals (orange one MOVES in the right panel)
-  coral(ctx, 82, 340, 1.15, '#ff7f9e');
-  const ocx = v ? 545 : 520, ocy = v ? 160 : 330;
-  coral(ctx, ocx, ocy, 1.0, '#ff9f43');
-  // seaweed (middle strand RECOLOURED teal in the right panel)
-  seaweed(ctx, 150, 345, 90, '#2fae5f', 1);
-  seaweed(ctx, 300, 348, 110, v ? '#2bb3a3' : '#2fae5f', 2.4);
-  seaweed(ctx, 455, 345, 80, '#2fae5f', 0.4);
-  // anemone
-  ctx.fillStyle = '#ff8fb3'; ellipse(ctx, 285, 338, 26, 10, '#ff8fb3');
-  for (let i = 0; i < 7; i++) {
-    const a = -Math.PI * (0.15 + i * 0.12);
-    line(ctx, 285 + Math.cos(a) * 8, 338 + Math.sin(a) * 4, 285 + Math.cos(a) * 22, 338 + Math.sin(a) * 16, '#ff6fa0', 3);
-  }
-  // octopus
-  ctx.save(); ctx.translate(95, 255);
-  ellipse(ctx, 0, -8, 22, 18, '#9b59d0');
-  circle(ctx, -8, -12, 3.5, '#fff'); circle(ctx, 8, -12, 3.5, '#fff');
-  circle(ctx, -7, -12, 1.8, '#222'); circle(ctx, 9, -12, 1.8, '#222');
-  ctx.strokeStyle = '#9b59d0'; ctx.lineWidth = 6; ctx.lineCap = 'round';
-  for (let i = 0; i < 5; i++) {
-    ctx.beginPath(); ctx.moveTo(-16 + i * 8, 6);
-    ctx.quadraticCurveTo(-14 + i * 8, 26, -20 + i * 8, 30); ctx.stroke();
-  }
-  ctx.restore();
-  // turtle (FLIPPED in the right panel)
-  ctx.save(); ctx.translate(420, 300); ctx.scale(v ? -1 : 1, 1);
-  ellipse(ctx, 0, 0, 34, 20, '#3d9b4f');
-  ellipse(ctx, 0, -2, 24, 13, '#57b368');
-  circle(ctx, 36, -6, 9, '#3d9b4f');
-  circle(ctx, 39, -8, 2.4, '#fff'); circle(ctx, 40, -8, 1.2, '#222');
-  poly(ctx, [[-32, -4], [-44, -12], [-44, 4]], '#57b368');
-  line(ctx, -16, 16, -22, 28, '#3d9b4f', 5); line(ctx, 14, 16, 20, 28, '#3d9b4f', 5);
-  ctx.restore();
-  // treasure chest
-  rect(ctx, 505, 330, 52, 30, '#8b5a2b'); rect(ctx, 505, 330, 52, 10, '#a06a35');
-  line(ctx, 531, 330, 531, 360, '#ffd700', 4); circle(ctx, 531, 348, 4, '#ffd700');
-  // fish: yellow one RECOLOURED purple in the right panel; blue one plain
-  fish(ctx, 200, 150, 1, v ? '#8b5cf6' : '#facc15', 1);
-  fish(ctx, 380, 215, 0.85, '#38bdf8', -1);
-  // extra small fish ADDED in the right panel
-  if (v) fish(ctx, 100, 100, 0.55, '#fb923c', 1);
-  // starfish (REMOVED in the right panel)
-  if (!v) star(ctx, 320, 368, 16, '#ff8c42');
-  // shells: pink one RESIZED bigger in the right panel
-  const shR = v ? 20 : 13;
-  ctx.fillStyle = '#ffb6c1'; ctx.beginPath(); ctx.arc(180, 378, shR, Math.PI, 0); ctx.closePath(); ctx.fill();
-  line(ctx, 180 - shR + 3, 378, 180 + shR - 3, 378, '#e58aa0', 2);
-  ctx.fillStyle = '#f5f0e6'; ctx.beginPath(); ctx.arc(450, 382, 11, Math.PI, 0); ctx.closePath(); ctx.fill();
-  // bubbles (one ADDED near the top in the right panel)
-  const bubbles = [[250, 300, 6], [420, 270, 5], [500, 240, 7], [180, 240, 4], [560, 200, 5]];
-  if (v) bubbles.push([350, 62, 6]);
-  for (const [bx, by, br] of bubbles) circle(ctx, bx, by, br, 'rgba(255,255,255,0.25)', 'rgba(255,255,255,0.7)', 1.5);
+  circle(ctx, 545, 62, 26, '#fff3b0');
+  // a few clouds and a bird to fill the morning sky
+  ellipse(ctx, 120, 70, 34, 12, '#fff'); ellipse(ctx, 150, 76, 26, 10, '#fff');
+  ellipse(ctx, 330, 48, 28, 10, '#fff');
+  ctx.strokeStyle = '#5a4632'; ctx.lineWidth = 3; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(420, 90); ctx.quadraticCurveTo(426, 83, 432, 90);
+  ctx.quadraticCurveTo(438, 83, 444, 90); ctx.stroke();
+  // BACKGROUND: shop fronts (small, far)
+  rect(ctx, 30, 130, 150, 130, '#c97b4a'); poly(ctx, [[22, 132], [105, 100], [188, 132]], '#8e44ad');
+  rect(ctx, 55, 165, 34, 40, '#7cc7e8'); rect(ctx, 120, 165, 34, 40, '#7cc7e8');
+  rect(ctx, 92, 205, 26, 55, '#6b3a1f');
+  rect(ctx, 400, 120, 170, 140, '#5a8a6b'); poly(ctx, [[392, 122], [485, 90], [578, 122]], '#e74c3c');
+  rect(ctx, 425, 160, 36, 42, '#7cc7e8'); rect(ctx, 505, 160, 36, 42, '#7cc7e8');
+  // shop sign (arrow FLIPS in the right panel)
+  rect(ctx, 420, 132, 130, 20, '#f5f0e6');
+  if (v) { poly(ctx, [[430, 142], [448, 134], [448, 150]], '#e74c3c'); }
+  else { poly(ctx, [[540, 142], [522, 134], [522, 150]], '#e74c3c'); }
+  text(ctx, 'MARKET', 485, 142, 12, '#2b2b26');
+  // cobble ground (gradient = depth)
+  ground(ctx, 260, W, H, '#d9b98a', '#b98f5f');
+  // background shoppers (small, far away)
+  person(ctx, { x: 430, y: 268, s: 0.6, skin: '#e8b88a', shirt: v ? '#facc15' : '#3b82f6', pants: '#3a3a3a', hair: '#222', pose: 'walk', dir: -1 });
+  person(ctx, { x: 500, y: 262, s: 0.58, skin: '#f2c89b', shirt: '#2fae5f', pants: '#5a4632', hair: '#7a4a21', pose: 'walk', dir: 1 });
+  // MIDGROUND: fruit stall (left-centre)
+  rect(ctx, 120, 288, 130, 12, '#8b5a2b'); // stall counter
+  rect(ctx, 128, 300, 8, 40, '#6b4a2a'); rect(ctx, 234, 300, 8, 40, '#6b4a2a');
+  // awning (RESIZED longer in the right panel)
+  const awW = v ? 150 : 130;
+  poly(ctx, [[115, 250], [135 + (awW - 130) / 2, 222], [245, 222], [255, 250]], '#e74c3c');
+  for (let i = 0; i < 5; i++) rect(ctx, 118 + i * 26, 222, 12, 28, i % 2 ? '#f5f0e6' : '#e74c3c');
+  // fruit piles on the stall
+  circle(ctx, 150, 280, 8, '#ff5a3c'); circle(ctx, 165, 280, 8, '#ff5a3c'); circle(ctx, 157, 270, 8, '#ff5a3c');
+  circle(ctx, 210, 280, 8, '#facc15'); circle(ctx, 225, 280, 8, '#facc15');
+  // an extra basket of fruit ADDED in the right panel
+  if (v) { rect(ctx, 185, 276, 22, 12, '#8b5a2b'); circle(ctx, 192, 274, 5, '#8b5cf6'); circle(ctx, 200, 274, 5, '#8b5cf6'); }
+  // vendor behind the stall (midground)
+  person(ctx, { x: 185, y: 296, s: 1.0, skin: '#e8b88a', shirt: '#2fae5f', pants: '#3a3a3a', hair: '#222', hat: v ? '#e74c3c' : '#e8c87a', pose: 'stand', dir: 1 });
+  // flower stall (right, midground)
+  rect(ctx, 380, 300, 110, 10, '#8b5a2b');
+  rect(ctx, 388, 310, 8, 34, '#6b4a2a'); rect(ctx, 474, 310, 8, 34, '#6b4a2a');
+  poly(ctx, [[375, 268], [395, 246], [475, 246], [495, 268]], '#8b5cf6');
+  circle(ctx, 400, 292, 7, '#ff6fa0'); circle(ctx, 420, 290, 7, '#ffd700'); circle(ctx, 440, 292, 7, '#ff6fa0');
+  circle(ctx, 460, 290, 7, '#e74c3c'); circle(ctx, 478, 292, 7, '#ffd700');
+  // shopper woman (midground, centre) — her red bag is REMOVED in the right panel
+  person(ctx, { x: 330, y: 332, s: 1.05, skin: '#f2c89b', shirt: '#3b82f6', dress: '#3b82f6', hair: '#5a3a21', bag: v ? null : '#e74c3c', pose: 'walk', dir: 1 });
+  // FOREGROUND: kid pointing at the fruit (big, close) — MOVED right in the right panel
+  const kx = v ? 120 : 95;
+  person(ctx, { x: kx, y: 358, s: 1.15, skin: '#f2c89b', shirt: '#e74c3c', pants: '#2e4a6b', hair: '#222', pose: 'point', dir: 1 });
+  // FOREGROUND: old man with a cane (big, close) — cane FLIPS side in the right panel
+  person(ctx, { x: 520, y: 352, s: 1.1, skin: '#e8b88a', shirt: '#7a6a8a', pants: '#3a3a3a', hair: '#d9d9d9', hat: '#5a4632', pose: 'stand', dir: -1 });
+  line(ctx, v ? 505 : 535, 320, v ? 500 : 540, 350, '#8b5a2b', 4); // cane
+  circle(ctx, v ? 505 : 535, 318, 3, '#ffd700');
+  // cat ADDED in the right panel, sitting by the stall
+  if (v) cat(ctx, 262, 352, 1, '#e8a33d');
+  // foreground shadows under the big figures
+  shadow(ctx, 95, 360, 26, 8); shadow(ctx, 520, 354, 26, 8);
 }
 
-const REEF_DIFFS = [
-  { id: 'reef-fish', type: 'recoloured', x: 200, y: 150, r: 30, hint: 'The yellow fish changed colour' },
-  { id: 'reef-star', type: 'removed', x: 320, y: 368, r: 22, hint: 'Something is missing from the sand' },
-  { id: 'reef-bubble', type: 'added', x: 350, y: 62, r: 14, hint: 'A new bubble near the top' },
-  { id: 'reef-coral', type: 'moved', x: 520, y: 330, r: 34, hint: 'The orange coral is not where it was' },
-  { id: 'reef-turtle', type: 'flipped', x: 420, y: 300, r: 36, hint: 'The turtle is facing the other way' },
-  { id: 'reef-shell', type: 'resized', x: 180, y: 378, r: 24, hint: 'A shell grew bigger' },
-  { id: 'reef-weed', type: 'recoloured', x: 300, y: 300, r: 30, hint: 'A seaweed strand changed colour' },
-  { id: 'reef-minnow', type: 'added', x: 100, y: 100, r: 20, hint: 'A small fish appeared top-left' },
+const MARKET_DIFFS = [
+  { id: 'mar-hat', type: 'recoloured', x: 185, y: 228, r: 20, hint: 'The vendor\u2019s hat changed colour' },
+  { id: 'mar-bag', type: 'removed', x: 344, y: 312, r: 18, hint: 'The shopper\u2019s bag is gone' },
+  { id: 'mar-kid', type: 'moved', x: 95, y: 322, r: 32, hint: 'The pointing boy shuffled sideways' },
+  { id: 'mar-cane', type: 'flipped', x: 520, y: 334, r: 26, hint: 'The old man\u2019s cane swapped sides' },
+  { id: 'mar-bgshirt', type: 'recoloured', x: 430, y: 238, r: 18, hint: 'A far shopper\u2019s shirt changed colour' },
+  { id: 'mar-awning', type: 'resized', x: 185, y: 236, r: 28, hint: 'The stall awning grew wider' },
+  { id: 'mar-fruit', type: 'added', x: 196, y: 280, r: 20, hint: 'A new basket of fruit appeared' },
+  { id: 'mar-sign', type: 'flipped', x: 485, y: 142, r: 22, hint: 'The shop sign\u2019s arrow points the other way' },
 ];
 
-// ---- Scene 2: Winter Village ----
-function drawVillage(ctx, v, W, H) {
-  // night sky
-  ctx.fillStyle = grad(ctx, 0, 0, 0, H, [[0, '#0d1b3d'], [0.6, '#274b7a'], [1, '#3d6a9e']]);
+// ---- Scene 2: Beach Day ----
+function drawBeach(ctx, v, W, H) {
+  // sky + sun
+  ctx.fillStyle = grad(ctx, 0, 0, 0, H, [[0, '#7cc7e8'], [0.4, '#a8dcf0'], [1, '#e8f7ff']]);
   ctx.fillRect(0, 0, W, H);
-  // moon + stars
-  circle(ctx, 520, 70, 30, '#fdf6d8'); circle(ctx, 510, 62, 6, '#e8ddb0'); circle(ctx, 530, 78, 4, '#e8ddb0');
-  for (const [sx, sy] of [[60, 50], [150, 90], [240, 40], [330, 70], [420, 45], [580, 130], [90, 140], [380, 120]]) {
+  circle(ctx, 520, 60, 28, '#ffdf6b');
+  ellipse(ctx, 120, 70, 34, 12, '#fff'); ellipse(ctx, 150, 76, 26, 10, '#fff');
+  ellipse(ctx, 340, 50, 28, 10, '#fff');
+  // sea (background plane)
+  ctx.fillStyle = grad(ctx, 0, 150, 0, 285, [[0, '#2f9fd8'], [1, '#4db2e8']]);
+  ctx.fillRect(0, 150, W, 135);
+  // waves
+  ctx.strokeStyle = 'rgba(255,255,255,0.7)'; ctx.lineWidth = 3; ctx.lineCap = 'round';
+  for (const [wx, wy] of [[80, 200], [200, 230], [320, 195], [450, 235], [540, 200]]) {
+    ctx.beginPath(); ctx.moveTo(wx - 22, wy); ctx.quadraticCurveTo(wx, wy - 8, wx + 22, wy); ctx.stroke();
+  }
+  // swimmer in the sea (REMOVED in the right panel)
+  if (!v) {
+    circle(ctx, 380, 212, 9, '#f2c89b');
+    line(ctx, 370, 218, 358, 200, '#f2c89b', 5); line(ctx, 390, 218, 402, 200, '#f2c89b', 5);
+    circle(ctx, 358, 198, 4, '#fff'); circle(ctx, 402, 198, 4, '#fff');
+  }
+  // sand (foreground plane, darker = closer)
+  ground(ctx, 285, W, H, '#f2d8a0', '#e0bd7a');
+  // lifeguard tower (midground) + lifeguard on top
+  line(ctx, 70, 300, 80, 208, '#8b5a2b', 6); line(ctx, 110, 300, 100, 208, '#8b5a2b', 6);
+  line(ctx, 72, 260, 108, 260, '#8b5a2b', 4);
+  rect(ctx, 68, 200, 44, 10, '#e74c3c');
+  person(ctx, { x: 90, y: 202, s: 0.9, skin: '#e8b88a', shirt: '#f5f0e6', pants: '#e74c3c', hair: '#222', hat: v ? '#3b82f6' : '#e74c3c', pose: 'sit', dir: 1 });
+  // umbrella (midground) — canopy RECOLOURED in the right panel
+  line(ctx, 480, 340, 480, 268, '#8b5a2b', 5);
+  ctx.fillStyle = v ? '#2bb3a3' : '#e74c3c';
+  ctx.beginPath(); ctx.arc(480, 268, 46, Math.PI, 0); ctx.closePath(); ctx.fill();
+  poly(ctx, [[448, 268], [462, 268], [470, 232]], '#f5f0e6');
+  poly(ctx, [[480, 268], [494, 268], [486, 228]], '#f5f0e6');
+  // sandcastle (midground) — flag ADDED in the right panel
+  rect(ctx, 275, 322, 52, 28, '#e8cf9a');
+  rect(ctx, 280, 306, 14, 18, '#e8cf9a'); rect(ctx, 308, 306, 14, 18, '#e8cf9a');
+  circle(ctx, 287, 304, 7, '#e8cf9a'); circle(ctx, 315, 304, 7, '#e8cf9a');
+  if (v) { line(ctx, 301, 300, 301, 276, '#8b5a2b', 3); poly(ctx, [[301, 276], [322, 282], [301, 288]], '#ff5a3c'); }
+  // kid building the castle (midground, sitting) — bucket MOVED in the right panel
+  person(ctx, { x: 280, y: 348, s: 0.9, skin: '#f2c89b', shirt: '#facc15', pants: '#2e6db4', hair: '#5a3a21', pose: 'sit', dir: -1 });
+  const bkx = v ? 288 : 262;
+  rect(ctx, bkx - 8, 342, 16, 14, '#e74c3c'); rect(ctx, bkx - 8, 342, 16, 4, '#c0392b');
+  // sunbather lying on a towel (foreground) — towel RESIZED longer in the right panel
+  const towelW = v ? 95 : 70;
+  rect(ctx, 140, 352, towelW, 16, '#ff6fa0');
+  shadow(ctx, 185, 370, 45, 7);
+  ellipse(ctx, 178, 348, 26, 9, '#f2c89b'); // torso
+  ellipse(ctx, 178, 348, 12, 8, '#3b82f6'); // swimsuit
+  circle(ctx, 150, 346, 8, '#f2c89b'); // head
+  ctx.fillStyle = '#5a3a21'; ctx.beginPath(); ctx.arc(150, 344, 8, Math.PI, 0); ctx.closePath(); ctx.fill();
+  line(ctx, 200, 348, 228, 344, '#f2c89b', 7); line(ctx, 200, 350, 228, 354, '#f2c89b', 7); // legs
+  // dad with a beach ball (foreground, big) — ball RECOLOURED in the right panel
+  person(ctx, { x: 540, y: 352, s: 1.15, skin: '#e8b88a', shirt: '#2fae5f', pants: '#2e4a6b', hair: '#222', pose: 'carry', dir: -1 });
+  circle(ctx, 522, 308, 14, v ? '#3b82f6' : '#e74c3c');
+  ctx.fillStyle = '#f5f0e6'; ctx.beginPath(); ctx.arc(522, 308, 14, Math.PI * 1.15, Math.PI * 1.6); ctx.closePath(); ctx.fill();
+  // crab (REMOVED in the right panel)
+  if (!v) {
+    ellipse(ctx, 430, 376, 10, 7, '#ff5a3c');
+    circle(ctx, 424, 372, 2, '#222'); circle(ctx, 434, 372, 2, '#222');
+    line(ctx, 420, 378, 412, 382, '#ff5a3c', 3); line(ctx, 440, 378, 448, 382, '#ff5a3c', 3);
+  }
+}
+
+const BEACH_DIFFS = [
+  { id: 'bea-cap', type: 'recoloured', x: 90, y: 137, r: 18, hint: 'The lifeguard\u2019s cap changed colour' },
+  { id: 'bea-swimmer', type: 'removed', x: 380, y: 210, r: 22, hint: 'The swimmer is gone from the sea' },
+  { id: 'bea-bucket', type: 'moved', x: 262, y: 350, r: 28, hint: 'The kid\u2019s bucket moved to the other side' },
+  { id: 'bea-ball', type: 'recoloured', x: 522, y: 308, r: 20, hint: 'The beach ball changed colour' },
+  { id: 'bea-towel', type: 'resized', x: 175, y: 360, r: 24, hint: 'The sunbather\u2019s towel grew longer' },
+  { id: 'bea-umbrella', type: 'recoloured', x: 480, y: 255, r: 30, hint: 'The beach umbrella changed colour' },
+  { id: 'bea-flag', type: 'added', x: 300, y: 288, r: 16, hint: 'A flag appeared on the sandcastle' },
+  { id: 'bea-crab', type: 'removed', x: 430, y: 376, r: 16, hint: 'The crab scuttled away' },
+];
+
+// ---- Scene 3: City Park ----
+function drawPark(ctx, v, W, H) {
+  // sky
+  ctx.fillStyle = grad(ctx, 0, 0, 0, H, [[0, '#8fd0f0'], [0.5, '#c8ecf7'], [1, '#e8f7e8']]);
+  ctx.fillRect(0, 0, W, H);
+  circle(ctx, 90, 60, 26, '#ffdf6b');
+  ellipse(ctx, 300, 60, 30, 10, '#fff'); ellipse(ctx, 480, 90, 26, 9, '#fff');
+  // BACKGROUND: big trees (far, smaller) — right tree RECOLOURED autumn in the right panel
+  const tree = (tx, ty, s, leaf) => {
+    ctx.save(); ctx.translate(tx, ty); ctx.scale(s, s);
+    rect(ctx, -6, 0, 12, 40, '#7a4a21');
+    circle(ctx, 0, -30, 28, leaf); circle(ctx, -22, -12, 20, leaf); circle(ctx, 22, -12, 20, leaf);
+    ctx.restore();
+  };
+  tree(60, 250, 1.1, '#2f9e4f');
+  tree(560, 245, 1.15, v ? '#e8862a' : '#2f9e4f');
+  tree(150, 240, 0.8, '#3d9b4f'); tree(470, 238, 0.8, '#3d9b4f');
+  // lawn (foreground plane)
+  ground(ctx, 240, W, H, '#7cc76a', '#4e9b47');
+  // path (diagonal, leads the eye into the scene = depth)
+  poly(ctx, [[0, 400], [120, 400], [300, 250], [260, 250]], '#d9c9a8');
+  // pond (right)
+  ellipse(ctx, 500, 342, 62, 18, '#4db2e8'); ellipse(ctx, 500, 340, 44, 12, '#7cc7e8');
+  // duck ADDED in the right panel
+  if (v) {
+    ellipse(ctx, 500, 336, 12, 8, '#f5f0e6');
+    circle(ctx, 510, 330, 6, '#f5f0e6'); poly(ctx, [[515, 330], [521, 332], [515, 334]], '#ff9f1c');
+  }
+  // bench + old man reading (midground) — newspaper FLIPPED in the right panel
+  rect(ctx, 428, 292, 74, 8, '#8b5a2b'); rect(ctx, 434, 300, 6, 20, '#6b4a2a'); rect(ctx, 490, 300, 6, 20, '#6b4a2a');
+  rect(ctx, 428, 268, 74, 6, '#8b5a2b');
+  person(ctx, { x: 465, y: 294, s: 0.85, skin: '#e8b88a', shirt: '#5a6a8a', pants: '#3a3a3a', hair: '#d9d9d9', pose: 'sit', dir: -1 });
+  ctx.save(); ctx.translate(452, 252); ctx.rotate(v ? 0.35 : -0.35);
+  rect(ctx, -14, -12, 28, 24, '#f5f0e6'); line(ctx, 0, -12, 0, 12, '#b8b8b8', 2); ctx.restore();
+  // picnic blanket (midground) + mom + kid + basket
+  rect(ctx, 128, 336, 92, 12, '#e74c3c');
+  rect(ctx, 150, 336, 12, 12, '#f5f0e6'); rect(ctx, 186, 336, 12, 12, '#f5f0e6');
+  person(ctx, { x: 158, y: 336, s: 0.95, skin: '#f2c89b', shirt: '#ff8fb3', dress: '#ff8fb3', hair: '#5a3a21', pose: 'sit', dir: 1 });
+  person(ctx, { x: 208, y: 340, s: 0.75, skin: '#f2c89b', shirt: '#3b82f6', pants: '#2e4a6b', hair: '#222', pose: 'stand', dir: -1 });
+  // basket (RESIZED bigger in the right panel)
+  const bkS = v ? 1.35 : 1;
+  ctx.save(); ctx.translate(185, 352); ctx.scale(bkS, bkS);
+  rect(ctx, -12, -10, 24, 14, '#a06a35'); rect(ctx, -12, -10, 24, 4, '#8b5a2b');
+  ctx.beginPath(); ctx.arc(0, -10, 8, Math.PI, 0); ctx.strokeStyle = '#8b5a2b'; ctx.lineWidth = 3; ctx.stroke();
+  ctx.restore();
+  // swing set (midground) — the swing MOVES sideways in the right panel
+  line(ctx, 280, 180, 268, 322, '#5a5a5a', 5); line(ctx, 340, 180, 352, 322, '#5a5a5a', 5);
+  line(ctx, 272, 180, 348, 180, '#5a5a5a', 5);
+  const swX = v ? 345 : 320;
+  line(ctx, swX - 12, 180, swX - 12, 296, '#3a3a3a', 3); line(ctx, swX + 12, 180, swX + 12, 296, '#3a3a3a', 3);
+  rect(ctx, swX - 16, 296, 32, 6, '#8b5a2b');
+  person(ctx, { x: swX, y: 298, s: 0.9, skin: '#e8b88a', shirt: '#facc15', pants: '#e74c3c', hair: '#222', pose: 'sit', dir: 1 });
+  // jogger (foreground, big, close)
+  person(ctx, { x: 450, y: 356, s: 1.2, skin: '#e8b88a', shirt: v ? '#2fae5f' : '#e74c3c', pants: '#2e4a6b', hair: '#222', pose: 'walk', dir: 1 });
+  // dog walker (foreground left) — hat REMOVED in the right panel
+  person(ctx, { x: 80, y: 352, s: 1.1, skin: '#f2c89b', shirt: '#8b5cf6', pants: '#3a3a3a', hair: '#7a4a21', hat: v ? null : '#3b82f6', pose: 'walk', dir: 1 });
+  // the walker's dog
+  ellipse(ctx, 116, 356, 14, 9, '#c08a4b');
+  circle(ctx, 128, 350, 7, '#c08a4b'); poly(ctx, [[126, 344], [128, 338], [131, 344]], '#c08a4b');
+  line(ctx, 104, 352, 96, 344, '#c08a4b', 4);
+  line(ctx, 108, 364, 108, 372, '#c08a4b', 4); line(ctx, 122, 364, 122, 372, '#c08a4b', 4);
+  // flower bed (REMOVED in the right panel)
+  if (!v) {
+    for (const [fx, fy, fc] of [[330, 372, '#ff6fa0'], [344, 376, '#ffd700'], [358, 372, '#e74c3c']]) {
+      circle(ctx, fx, fy, 5, fc); circle(ctx, fx, fy, 2, '#ffd700');
+    }
+  }
+}
+
+const PARK_DIFFS = [
+  { id: 'par-shirt', type: 'recoloured', x: 450, y: 310, r: 28, hint: 'The jogger\u2019s shirt changed colour' },
+  { id: 'par-hat', type: 'removed', x: 80, y: 273, r: 18, hint: 'The dog walker\u2019s hat is gone' },
+  { id: 'par-swing', type: 'moved', x: 320, y: 270, r: 30, hint: 'The swing kid swung to the other side' },
+  { id: 'par-basket', type: 'resized', x: 185, y: 350, r: 22, hint: 'The picnic basket grew bigger' },
+  { id: 'par-paper', type: 'flipped', x: 452, y: 252, r: 20, hint: 'The old man\u2019s newspaper flipped over' },
+  { id: 'par-tree', type: 'recoloured', x: 560, y: 205, r: 30, hint: 'A tree turned autumn orange' },
+  { id: 'par-duck', type: 'added', x: 500, y: 335, r: 16, hint: 'A duck appeared on the pond' },
+  { id: 'par-flowers', type: 'removed', x: 344, y: 374, r: 20, hint: 'The flower bed is gone' },
+];
+
+// ---- Scene 4: Train Station ----
+function drawStation(ctx, v, W, H) {
+  // covered platform: wall + roof beams
+  ctx.fillStyle = grad(ctx, 0, 0, 0, H, [[0, '#e8dcc8'], [0.5, '#d9c9a8'], [1, '#c9b48a']]);
+  ctx.fillRect(0, 0, W, H);
+  rect(ctx, 0, 0, W, 26, '#5a4a3a');
+  for (let bx = 40; bx < 620; bx += 120) rect(ctx, bx, 26, 14, 60, '#5a4a3a');
+  // big station clock (RESIZED bigger in the right panel)
+  const clkR = v ? 32 : 24;
+  circle(ctx, 450, 112, clkR, '#f5f0e6', '#2b2b26', 4);
+  line(ctx, 450, 112, 450, 112 - clkR * 0.6, '#2b2b26', 3);
+  line(ctx, 450, 112, 450 + clkR * 0.45, 112, '#2b2b26', 3);
+  // train (background, left) — door RECOLOURED in the right panel
+  rect(ctx, 40, 190, 260, 95, '#3b82f6');
+  rect(ctx, 40, 190, 260, 18, '#2563eb');
+  for (let wx = 60; wx < 280; wx += 44) rect(ctx, wx, 215, 30, 30, '#bfe8ff', '#1e40af', 2);
+  rect(ctx, 245, 215, 30, 70, v ? '#facc15' : '#2563eb', '#1e40af', 2);
+  circle(ctx, 80, 292, 12, '#222'); circle(ctx, 140, 292, 12, '#222'); circle(ctx, 260, 292, 12, '#222');
+  // ticket window (background, right) + queue
+  rect(ctx, 500, 190, 90, 80, '#8b5a2b'); rect(ctx, 515, 205, 60, 40, '#7cc7e8', '#5a3a21', 3);
+  text(ctx, 'TICKETS', 545, 258, 11, '#f5f0e6');
+  person(ctx, { x: 505, y: 278, s: 0.6, skin: '#f2c89b', shirt: '#e74c3c', pants: '#2e4a6b', hair: '#222', pose: 'stand', dir: -1 });
+  // one queue person REMOVED in the right panel
+  if (!v) person(ctx, { x: 535, y: 282, s: 0.6, skin: '#e8b88a', shirt: '#2fae5f', pants: '#3a3a3a', hair: '#7a4a21', pose: 'stand', dir: -1 });
+  // platform floor (foreground plane)
+  ground(ctx, 300, W, H, '#c9b48a', '#a8895f');
+  line(ctx, 0, 302, W, 302, '#f5f0e6', 4); // platform edge line
+  // conductor (midground) — flag RECOLOURED in the right panel
+  person(ctx, { x: 330, y: 300, s: 1.0, skin: '#e8b88a', shirt: '#2e4a6b', pants: '#2e4a6b', hair: '#222', hat: '#2e4a6b', pose: 'wave', dir: 1 });
+  line(ctx, 352, 232, 352, 208, '#8b5a2b', 3);
+  poly(ctx, [[352, 208], [374, 214], [352, 220]], v ? '#2fae5f' : '#e74c3c');
+  // woman waving goodbye (midground) — gesture FLIPS to pointing in the right panel
+  person(ctx, { x: 430, y: 300, s: 1.0, skin: '#f2c89b', shirt: '#ff8fb3', dress: '#ff8fb3', hair: '#5a3a21', pose: v ? 'point' : 'wave', dir: -1 });
+  // traveler with a suitcase (foreground, big) — suitcase REMOVED in the right panel
+  person(ctx, { x: 180, y: 352, s: 1.15, skin: '#f2c89b', shirt: '#facc15', pants: '#2e4a6b', hair: '#222', pose: 'walk', dir: 1 });
+  if (!v) {
+    rect(ctx, 206, 330, 22, 26, '#8b5cf6'); rect(ctx, 206, 330, 22, 6, '#6d28d9');
+    line(ctx, 212, 330, 212, 322, '#8b5a2b', 3);
+    circle(ctx, 210, 358, 3, '#222'); circle(ctx, 224, 358, 3, '#222');
+  }
+  // kid with a backpack (foreground) — backpack MOVED to the front in the right panel
+  person(ctx, { x: 540, y: 346, s: 0.95, skin: '#e8b88a', shirt: '#3b82f6', pants: '#e74c3c', hair: '#222', pose: 'stand', dir: -1 });
+  const pkx = v ? 528 : 552;
+  rect(ctx, pkx - 8, 296, 16, 20, '#2fae5f'); rect(ctx, pkx - 8, 296, 16, 5, '#1f7a33');
+  // pigeon ADDED in the right panel
+  if (v) {
+    ellipse(ctx, 250, 370, 10, 7, '#8a8a8a');
+    circle(ctx, 259, 365, 5, '#8a8a8a'); poly(ctx, [[263, 365], [268, 367], [263, 368]], '#ff9f1c');
+    line(ctx, 246, 376, 244, 382, '#5a5a5a', 2); line(ctx, 252, 376, 252, 382, '#5a5a5a', 2);
+  }
+}
+
+const STATION_DIFFS = [
+  { id: 'sta-flag', type: 'recoloured', x: 360, y: 214, r: 18, hint: 'The conductor\u2019s flag changed colour' },
+  { id: 'sta-case', type: 'removed', x: 217, y: 344, r: 20, hint: 'The traveler\u2019s suitcase is gone' },
+  { id: 'sta-wave', type: 'flipped', x: 430, y: 260, r: 28, hint: 'The waving woman is pointing now' },
+  { id: 'sta-pack', type: 'moved', x: 552, y: 306, r: 26, hint: 'The kid\u2019s backpack moved to his front' },
+  { id: 'sta-queue', type: 'removed', x: 535, y: 245, r: 18, hint: 'Someone left the ticket queue' },
+  { id: 'sta-clock', type: 'resized', x: 450, y: 112, r: 30, hint: 'The station clock grew bigger' },
+  { id: 'sta-door', type: 'recoloured', x: 260, y: 250, r: 24, hint: 'The train door changed colour' },
+  { id: 'sta-pigeon', type: 'added', x: 250, y: 370, r: 14, hint: 'A pigeon landed on the platform' },
+];
+
+// ---- Scene 5: Night Festival ----
+function drawFestival(ctx, v, W, H) {
+  // night sky
+  ctx.fillStyle = grad(ctx, 0, 0, 0, H, [[0, '#141433'], [0.55, '#2a2a5e'], [1, '#4a2a6e']]);
+  ctx.fillRect(0, 0, W, H);
+  for (const [sx, sy] of [[60, 50], [140, 90], [220, 40], [330, 70], [430, 45], [560, 140], [90, 140], [380, 120], [480, 60], [260, 130], [40, 200], [590, 90]]) {
     star(ctx, sx, sy, 4, '#fff');
   }
-  // snow ground
-  ctx.fillStyle = '#f4f8ff'; ctx.beginPath(); ctx.moveTo(0, 305);
-  ctx.bezierCurveTo(150, 290, 320, 312, 480, 298); ctx.bezierCurveTo(540, 292, 590, 302, W, 300);
-  ctx.lineTo(W, H); ctx.lineTo(0, H); ctx.closePath(); ctx.fill();
-  // house 1 (red, chimney smoke REMOVED in right panel)
-  rect(ctx, 80, 200, 140, 105, '#c0392b'); poly(ctx, [[70, 202], [150, 160], [230, 202]], '#f4f8ff');
-  rect(ctx, 175, 168, 18, 34, '#8b5a2b');
-  if (!v) { // smoke puffs
-    circle(ctx, 184, 152, 9, 'rgba(255,255,255,0.75)'); circle(ctx, 192, 138, 12, 'rgba(255,255,255,0.6)');
-    circle(ctx, 202, 122, 14, 'rgba(255,255,255,0.45)');
-  }
-  rect(ctx, 100, 230, 26, 30, '#ffd76a'); rect(ctx, 170, 230, 26, 30, '#ffd76a');
-  line(ctx, 113, 230, 113, 260, '#8b5a2b', 2); line(ctx, 100, 245, 126, 245, '#8b5a2b', 2);
-  rect(ctx, 138, 265, 26, 40, '#6b3a1f'); circle(ctx, 158, 285, 2.5, '#ffd76a');
-  // house 2 (blue, window RECOLOURED blue in right panel, wreath FLIPPED)
-  rect(ctx, 280, 210, 140, 95, '#2e6db4'); poly(ctx, [[272, 212], [350, 172], [428, 212]], '#f4f8ff');
-  rect(ctx, 300, 235, 26, 30, v ? '#7cc7ff' : '#ffd76a');
-  rect(ctx, 375, 235, 26, 30, '#ffd76a');
-  rect(ctx, 338, 265, 26, 40, '#1f3a5f');
-  circle(ctx, 351, 252, 11, '#2fae5f'); circle(ctx, 351, 252, 6, '#e74c3c');
-  if (v) { circle(ctx, 351, 252, 3, '#ffd76a'); } // wreath bow flips side
-  // house 3 (green)
-  rect(ctx, 460, 215, 110, 90, '#3d8b4f'); poly(ctx, [[452, 217], [515, 180], [578, 217]], '#f4f8ff');
-  rect(ctx, 480, 240, 24, 28, '#ffd76a'); rect(ctx, 530, 240, 24, 28, '#ffd76a');
-  rect(ctx, 505, 270, 22, 35, '#234d2c');
-  // pine trees (right one RESIZED taller in right panel)
-  pine(ctx, 245, 285, 1, true);
-  pine(ctx, 445, 285, v ? 1.45 : 1.1, true);
-  // snowman (carrot MOVED to the other side in right panel)
-  circle(ctx, 320, 345, 22, '#fff'); circle(ctx, 320, 312, 16, '#fff'); circle(ctx, 320, 288, 12, '#fff');
-  circle(ctx, 315, 285, 2, '#222'); circle(ctx, 325, 285, 2, '#222');
-  poly(ctx, v ? [[320, 290], [306, 293], [320, 296]] : [[320, 290], [334, 293], [320, 296]], '#ff7f2a');
-  rect(ctx, 308, 272, 24, 6, '#222'); rect(ctx, 313, 260, 14, 14, '#222');
-  line(ctx, 306, 312, 296, 322, '#7a4a21', 3); line(ctx, 334, 312, 344, 322, '#7a4a21', 3);
-  // lamp post (light RECOLOURED in right panel)
-  rect(ctx, 147, 250, 6, 58, '#2c2c2c'); circle(ctx, 150, 246, 10, v ? '#9fd8ff' : '#ffd76a', '#2c2c2c', 2);
-  circle(ctx, 150, 246, 22, v ? 'rgba(159,216,255,0.25)' : 'rgba(255,215,106,0.30)');
-  // fence
-  for (let fx = 40; fx < 600; fx += 34) { rect(ctx, fx, 296, 5, 16, '#8b5a2b'); }
-  line(ctx, 30, 300, 600, 300, '#8b5a2b', 3);
-  // sled (REMOVED in right panel)
-  if (!v) {
-    poly(ctx, [[470, 360], [520, 360], [512, 372], [478, 372]], '#b03a2e');
-    line(ctx, 474, 374, 516, 374, '#7a4a21', 3);
-  }
-  // gifts (one ADDED in right panel)
-  rect(ctx, 250, 366, 18, 14, '#e74c3c'); line(ctx, 259, 366, 259, 380, '#ffd76a', 3);
-  if (v) { rect(ctx, 200, 368, 16, 12, '#8e44ad'); line(ctx, 208, 368, 208, 380, '#ffd76a', 3); }
-  // footprints
-  for (let i = 0; i < 6; i++) ellipse(ctx, 380 + i * 14, 352 + (i % 2) * 6, 5, 3, '#dbe7f5');
-}
-
-const VILLAGE_DIFFS = [
-  { id: 'vil-smoke', type: 'removed', x: 190, y: 140, r: 26, hint: 'Smoke vanished from a chimney' },
-  { id: 'vil-window', type: 'recoloured', x: 313, y: 250, r: 20, hint: 'A window light changed colour' },
-  { id: 'vil-nose', type: 'moved', x: 320, y: 292, r: 16, hint: 'The snowman\u2019s nose points the other way' },
-  { id: 'vil-pine', type: 'resized', x: 445, y: 250, r: 30, hint: 'A pine tree grew taller' },
-  { id: 'vil-wreath', type: 'flipped', x: 351, y: 252, r: 16, hint: 'The wreath\u2019s bow swapped sides' },
-  { id: 'vil-gift', type: 'added', x: 208, y: 374, r: 16, hint: 'A new gift appeared in the snow' },
-  { id: 'vil-lamp', type: 'recoloured', x: 150, y: 246, r: 18, hint: 'The lamp glow changed colour' },
-  { id: 'vil-sled', type: 'removed', x: 495, y: 366, r: 24, hint: 'The sled is gone' },
-];
-
-// ---- Scene 3: Jungle Temple ----
-function drawTemple(ctx, v, W, H) {
-  // jungle sky + canopy
-  ctx.fillStyle = grad(ctx, 0, 0, 0, H, [[0, '#ffe9a8'], [0.4, '#a8d08d'], [1, '#3f7a44']]);
-  ctx.fillRect(0, 0, W, H);
-  circle(ctx, 90, 70, 34, '#fff3b0');
-  // distant trees
-  poly(ctx, [[0, 400], [60, 180], [120, 400]], '#2e6b34');
-  poly(ctx, [[500, 400], [560, 170], [620, 400]], '#2e6b34');
-  // temple pyramid
-  ctx.fillStyle = '#9a9a8e';
-  poly(ctx, [[230, 300], [390, 300], [360, 240], [260, 240]], '#9a9a8e');
-  poly(ctx, [[255, 240], [365, 240], [345, 190], [275, 190]], '#a8a89c');
-  poly(ctx, [[280, 190], [340, 190], [328, 150], [292, 150]], '#b5b5a8');
-  // doorway
-  poly(ctx, [[298, 300], [322, 300], [318, 250], [302, 250]], '#2b2b26');
-  // steps
-  for (let i = 0; i < 4; i++) rect(ctx, 240 - i * 8, 300 + i * 12, 140 + i * 16, 12, i % 2 ? '#8f8f83' : '#9a9a8e');
-  // statue on top (arm MOVED in right panel)
-  circle(ctx, 310, 132, 12, '#c9c9bc');
-  rect(ctx, 302, 142, 16, 22, '#c9c9bc');
-  line(ctx, 304, 150, v ? 292 : 288, 138, '#c9c9bc', 5); // raised arm side
-  line(ctx, 316, 150, 326, 160, '#c9c9bc', 5);
-  // torches (left flame REMOVED in right panel)
-  rect(ctx, 218, 200, 6, 26, '#6b4a2a'); rect(ctx, 396, 200, 6, 26, '#6b4a2a');
-  if (!v) { ellipse(ctx, 221, 192, 7, 12, '#ff9f1c'); ellipse(ctx, 221, 194, 4, 7, '#ffe66d'); }
-  ellipse(ctx, 399, 192, 7, 12, '#ff9f1c'); ellipse(ctx, 399, 194, 4, 7, '#ffe66d');
-  // moss patches (one RECOLOURED in right panel)
-  ellipse(ctx, 285, 210, 16, 7, v ? '#e0a800' : '#4e9b47');
-  ellipse(ctx, 340, 225, 12, 6, '#4e9b47'); ellipse(ctx, 310, 175, 10, 5, '#4e9b47');
-  // vines (left one RESIZED longer in right panel)
-  const vineLen = v ? 150 : 100;
-  ctx.strokeStyle = '#2f7a33'; ctx.lineWidth = 5; ctx.lineCap = 'round';
-  ctx.beginPath(); ctx.moveTo(150, 0); ctx.quadraticCurveTo(140, vineLen * 0.5, 155, vineLen); ctx.stroke();
-  ctx.beginPath(); ctx.moveTo(470, 0); ctx.quadraticCurveTo(480, 50, 462, 95); ctx.stroke();
-  ellipse(ctx, 152, vineLen * 0.6, 8, 5, '#3d9b4f'); ellipse(ctx, 465, 60, 8, 5, '#3d9b4f');
-  // foliage edges
-  ellipse(ctx, 30, 200, 40, 90, '#2e6b34'); ellipse(ctx, 590, 210, 40, 90, '#2e6b34');
-  ellipse(ctx, 45, 120, 30, 50, '#3d8b4f'); ellipse(ctx, 575, 120, 30, 50, '#3d8b4f');
-  // monkeys (right one FLIPPED in right panel)
-  ctx.save(); ctx.translate(180, 205); circle(ctx, 0, 0, 14, '#8b5a2b');
-  circle(ctx, -5, -3, 2, '#222'); circle(ctx, 5, -3, 2, '#222');
-  ellipse(ctx, 0, 6, 8, 5, '#d9b48f'); ctx.restore();
-  ctx.save(); ctx.translate(430, 182); ctx.scale(v ? -1 : 1, 1);
-  circle(ctx, 0, 0, 14, '#8b5a2b'); circle(ctx, -5, -3, 2, '#222'); circle(ctx, 5, -3, 2, '#222');
-  ellipse(ctx, 0, 6, 8, 5, '#d9b48f');
-  ctx.beginPath(); ctx.moveTo(12, 4); ctx.quadraticCurveTo(26, 2, 24, -10); ctx.strokeStyle = '#8b5a2b'; ctx.lineWidth = 4; ctx.stroke();
-  ctx.restore();
-  // parrot (RECOLOURED blue in right panel)
-  ctx.save(); ctx.translate(520, 150);
-  ellipse(ctx, 0, 0, 14, 9, v ? '#3b82f6' : '#e74c3c');
-  circle(ctx, 12, -6, 7, v ? '#3b82f6' : '#e74c3c');
-  poly(ctx, [[18, -6], [26, -3], [18, -1]], '#f5a623');
-  line(ctx, -4, 8, -12, 20, v ? '#1d4ed8' : '#c0392b', 4);
-  ctx.restore();
-  // waterfall (REMOVED in right panel)
-  if (!v) {
-    ctx.fillStyle = '#7cc7e8'; ctx.beginPath(); ctx.moveTo(548, 150);
-    ctx.bezierCurveTo(540, 220, 560, 260, 552, 330); ctx.lineTo(572, 330);
-    ctx.bezierCurveTo(578, 260, 566, 220, 570, 150); ctx.closePath(); ctx.fill();
-    ctx.fillStyle = 'rgba(255,255,255,0.6)';
-    ellipse(ctx, 560, 335, 22, 6, 'rgba(255,255,255,0.6)');
-  }
-  // treasure coins + chest ADDED in right panel
-  for (let i = 0; i < 8; i++) circle(ctx, 292 + (i % 4) * 12, 318 + Math.floor(i / 4) * 7, 5, '#ffd700', '#b8860b', 1.5);
-  if (v) { rect(ctx, 352, 302, 30, 18, '#8b5a2b'); rect(ctx, 352, 302, 30, 6, '#a06a35'); }
-  // skull
-  circle(ctx, 250, 322, 9, '#f5f0e6'); rect(ctx, 243, 326, 14, 8, '#f5f0e6');
-  circle(ctx, 247, 321, 2, '#222'); circle(ctx, 253, 321, 2, '#222');
-}
-
-const TEMPLE_DIFFS = [
-  { id: 'tem-parrot', type: 'recoloured', x: 520, y: 150, r: 22, hint: 'The parrot changed colour' },
-  { id: 'tem-torch', type: 'removed', x: 221, y: 192, r: 18, hint: 'A torch flame went out' },
-  { id: 'tem-statue', type: 'moved', x: 300, y: 142, r: 22, hint: 'The statue\u2019s arm moved' },
-  { id: 'tem-vine', type: 'resized', x: 150, y: 90, r: 26, hint: 'A vine grew longer' },
-  { id: 'tem-monkey', type: 'flipped', x: 430, y: 182, r: 22, hint: 'A monkey turned around' },
-  { id: 'tem-chest', type: 'added', x: 367, y: 311, r: 20, hint: 'A chest appeared by the coins' },
-  { id: 'tem-moss', type: 'recoloured', x: 285, y: 210, r: 20, hint: 'A moss patch changed colour' },
-  { id: 'tem-falls', type: 'removed', x: 560, y: 250, r: 30, hint: 'The waterfall dried up' },
-];
-
-// ---- Scene 4: Desert Oasis ----
-function drawOasis(ctx, v, W, H) {
-  // sky + sun (RECOLOURED red in right panel)
-  ctx.fillStyle = grad(ctx, 0, 0, 0, H, [[0, '#ffb347'], [0.5, '#ffd98a'], [1, '#f7e3b0']]);
-  ctx.fillRect(0, 0, W, H);
-  circle(ctx, 520, 80, 34, v ? '#ff5a3c' : '#ffcf3f');
-  circle(ctx, 520, 80, 44, v ? 'rgba(255,90,60,0.25)' : 'rgba(255,207,63,0.30)');
-  // birds (middle one REMOVED in right panel)
-  const bird = (bx, by) => {
-    ctx.strokeStyle = '#5a4632'; ctx.lineWidth = 3; ctx.lineCap = 'round';
-    ctx.beginPath(); ctx.moveTo(bx - 10, by); ctx.quadraticCurveTo(bx - 4, by - 7, bx, by);
-    ctx.quadraticCurveTo(bx + 4, by - 7, bx + 10, by); ctx.stroke();
-  };
-  bird(200, 100); if (!v) bird(300, 90); bird(400, 110);
-  // dunes
-  ctx.fillStyle = '#e8b96a'; ctx.beginPath(); ctx.moveTo(0, 300);
-  ctx.bezierCurveTo(140, 270, 260, 310, 420, 285); ctx.bezierCurveTo(520, 272, 580, 292, W, 285);
-  ctx.lineTo(W, H); ctx.lineTo(0, H); ctx.closePath(); ctx.fill();
-  ctx.fillStyle = '#dfa856'; ctx.beginPath(); ctx.moveTo(0, 340);
-  ctx.bezierCurveTo(180, 320, 380, 352, W, 335); ctx.lineTo(W, H); ctx.lineTo(0, H); ctx.closePath(); ctx.fill();
-  // oasis pond
-  ellipse(ctx, 310, 330, 95, 26, '#4db2e8'); ellipse(ctx, 310, 328, 70, 18, '#7cc7e8');
-  // palm trees (coconut RECOLOURED in right panel)
-  const palm = (px, py, s) => {
-    ctx.save(); ctx.translate(px, py); ctx.scale(s, s);
-    ctx.strokeStyle = '#8b5a2b'; ctx.lineWidth = 9; ctx.lineCap = 'round';
-    ctx.beginPath(); ctx.moveTo(0, 0); ctx.quadraticCurveTo(6, -40, -2, -70); ctx.stroke();
-    ctx.strokeStyle = '#2f9e4f'; ctx.lineWidth = 6;
-    for (let i = 0; i < 5; i++) {
-      const a = -Math.PI * (0.1 + i * 0.2);
-      ctx.beginPath(); ctx.moveTo(-2, -70);
-      ctx.quadraticCurveTo(Math.cos(a) * 26, -70 + Math.sin(a) * 18, Math.cos(a) * 44, -70 + Math.sin(a) * 26);
-      ctx.stroke();
+  circle(ctx, 90, 60, 24, '#fdf6d8');
+  // firework ADDED in the right panel
+  if (v) {
+    for (let i = 0; i < 8; i++) {
+      const a = i * Math.PI / 4;
+      line(ctx, 150, 80, 150 + Math.cos(a) * 26, 80 + Math.sin(a) * 26, i % 2 ? '#ffd700' : '#ff6fa0', 3);
     }
-    ctx.restore();
-  };
-  palm(150, 300, 1); palm(455, 295, 0.9);
-  circle(ctx, 148, 228, 6, v ? '#ff5a3c' : '#8b5a2b'); circle(ctx, 158, 232, 6, '#8b5a2b');
-  // camel (MOVED right in right panel)
-  const cx = v ? 285 : 250;
-  ctx.save(); ctx.translate(cx, 300);
-  ellipse(ctx, 0, 0, 34, 18, '#c08a4b');
-  ellipse(ctx, -6, -16, 12, 10, '#c08a4b'); ellipse(ctx, 12, -16, 12, 10, '#c08a4b');
-  ctx.beginPath(); ctx.moveTo(30, -6); ctx.quadraticCurveTo(44, -26, 40, -40); ctx.strokeStyle = '#c08a4b'; ctx.lineWidth = 9; ctx.stroke();
-  circle(ctx, 40, -44, 8, '#c08a4b'); poly(ctx, [[46, -46], [52, -42], [44, -40]], '#c08a4b');
-  line(ctx, -22, 14, -24, 32, '#8b5a2b', 5); line(ctx, -8, 16, -8, 32, '#8b5a2b', 5);
-  line(ctx, 12, 16, 12, 32, '#8b5a2b', 5); line(ctx, 24, 14, 26, 32, '#8b5a2b', 5);
-  ctx.restore();
-  // cactus (RESIZED taller in right panel)
-  ctx.save(); ctx.translate(552, 330); ctx.scale(1, v ? 1.5 : 1);
-  ctx.fillStyle = '#2f9e4f';
-  ctx.beginPath(); ctx.arc(0, -20, 10, 0, Math.PI * 2); ctx.fill(); ctx.fillRect(-10, -20, 20, 22);
-  ctx.beginPath(); ctx.arc(-16, -6, 6, 0, Math.PI * 2); ctx.fill(); ctx.fillRect(-22, -6, 12, 12);
-  ctx.beginPath(); ctx.arc(16, -12, 6, 0, Math.PI * 2); ctx.fill(); ctx.fillRect(10, -12, 12, 14);
-  ctx.restore();
-  // tent (FLIPPED in right panel)
-  ctx.save(); ctx.translate(100, 300); ctx.scale(v ? -1 : 1, 1);
-  poly(ctx, [[-45, 0], [0, -42], [45, 0]], '#e74c3c');
-  poly(ctx, [[-15, 0], [0, -42], [15, 0]], '#f5f0e6');
-  poly(ctx, [[-8, 0], [0, -14], [8, 0]], '#2b2b26');
-  ctx.restore();
-  // well
-  ellipse(ctx, 480, 330, 26, 10, '#9a9a8e'); rect(ctx, 462, 300, 6, 26, '#8b5a2b'); rect(ctx, 492, 300, 6, 26, '#8b5a2b');
-  poly(ctx, [[458, 302], [480, 282], [502, 302]], '#c0392b');
-  // flowers (one ADDED in right panel)
-  const flower = (fx, fy, c) => {
-    for (let i = 0; i < 5; i++) { const a = i * Math.PI * 2 / 5; circle(ctx, fx + Math.cos(a) * 6, fy + Math.sin(a) * 6, 4, c); }
-    circle(ctx, fx, fy, 3.5, '#ffd700');
-  };
-  flower(280, 352, '#ff6fa0'); flower(340, 356, '#ff6fa0');
-  if (v) flower(385, 356, '#ff6fa0');
-  // rocks (one REMOVED in right panel)
-  ellipse(ctx, 200, 372, 16, 8, '#b8a88a'); ellipse(ctx, 230, 378, 11, 6, '#b8a88a');
-  if (!v) ellipse(ctx, 410, 374, 13, 7, '#b8a88a');
-  // rug
-  rect(ctx, 90, 330, 46, 16, '#8e44ad'); rect(ctx, 96, 334, 34, 8, '#ffd700');
-}
-
-const OASIS_DIFFS = [
-  { id: 'oas-bird', type: 'removed', x: 300, y: 90, r: 18, hint: 'A bird flew away' },
-  { id: 'oas-nut', type: 'recoloured', x: 148, y: 228, r: 12, hint: 'A coconut changed colour' },
-  { id: 'oas-camel', type: 'moved', x: 250, y: 300, r: 36, hint: 'The camel shuffled sideways' },
-  { id: 'oas-cactus', type: 'resized', x: 552, y: 305, r: 26, hint: 'The cactus grew taller' },
-  { id: 'oas-tent', type: 'flipped', x: 100, y: 280, r: 30, hint: 'The tent faces the other way' },
-  { id: 'oas-flower', type: 'added', x: 385, y: 356, r: 14, hint: 'A flower bloomed by the pond' },
-  { id: 'oas-sun', type: 'recoloured', x: 520, y: 80, r: 34, hint: 'The sun changed colour' },
-  { id: 'oas-rock', type: 'removed', x: 410, y: 374, r: 16, hint: 'A rock is missing from the sand' },
-];
-
-// ---- Scene 5: Moon Base ----
-function drawMoon(ctx, v, W, H) {
-  // space
-  ctx.fillStyle = '#0a0a1a'; ctx.fillRect(0, 0, W, H);
-  // stars (one REMOVED in right panel)
-  const stars = [[60, 50], [140, 90], [220, 40], [330, 70], [430, 45], [560, 140], [90, 140], [380, 120], [480, 60], [260, 130]];
-  for (const [sx, sy] of stars) { if (sx === 60 && sy === 50 && v) continue; star(ctx, sx, sy, 4, '#fff'); }
-  // Earth
-  circle(ctx, 520, 80, 32, '#3b82f6'); ellipse(ctx, 512, 72, 14, 8, '#2f9e4f'); ellipse(ctx, 528, 90, 10, 6, '#2f9e4f');
-  circle(ctx, 520, 80, 32, null, 'rgba(255,255,255,0.5)', 2);
-  // satellite ADDED in right panel
-  if (v) {
-    rect(ctx, 410, 84, 22, 12, '#c0c0c8'); rect(ctx, 396, 88, 12, 5, '#3b82f6'); rect(ctx, 434, 88, 12, 5, '#3b82f6');
-    line(ctx, 421, 84, 421, 74, '#c0c0c8', 2); circle(ctx, 421, 72, 3, '#ff5a3c');
+    circle(ctx, 150, 80, 5, '#fff');
   }
-  // moon surface
-  ctx.fillStyle = '#c9c9c9'; ctx.beginPath(); ctx.moveTo(0, 290);
-  ctx.bezierCurveTo(150, 275, 320, 298, 480, 282); ctx.bezierCurveTo(540, 276, 590, 288, W, 285);
-  ctx.lineTo(W, H); ctx.lineTo(0, H); ctx.closePath(); ctx.fill();
-  // craters (one RESIZED bigger in right panel)
-  ellipse(ctx, 120, 340, 22, 8, '#a8a8a8');
-  ellipse(ctx, 250, 352, v ? 34 : 20, v ? 12 : 8, '#a8a8a8');
-  ellipse(ctx, 420, 345, 16, 7, '#a8a8a8'); ellipse(ctx, 520, 360, 18, 7, '#a8a8a8');
-  // base dome
-  ctx.fillStyle = '#f5f0e6'; ctx.beginPath(); ctx.arc(450, 285, 42, Math.PI, 0); ctx.closePath(); ctx.fill();
-  rect(ctx, 408, 285, 84, 8, '#d9d9d9'); rect(ctx, 440, 300, 20, 14, '#3b82f6');
-  circle(ctx, 432, 258, 6, '#7cc7e8'); circle(ctx, 462, 252, 5, '#7cc7e8');
-  // solar panels (RECOLOURED purple in right panel)
-  ctx.save(); ctx.translate(510, 300); ctx.rotate(-0.25);
-  rect(ctx, -4, -22, 8, 30, '#8b8b8b');
-  rect(ctx, -26, -34, 52, 16, v ? '#8b5cf6' : '#2563eb');
-  line(ctx, -13, -34, -13, -18, '#1e40af', 2); line(ctx, 0, -34, 0, -18, '#1e40af', 2); line(ctx, 13, -34, 13, -18, '#1e40af', 2);
-  ctx.restore();
-  // flag (RECOLOURED green stripes in right panel)
-  line(ctx, 150, 250, 150, 310, '#8b8b8b', 4);
-  rect(ctx, 150, 250, 40, 24, v ? '#2f9e4f' : '#e74c3c');
-  rect(ctx, 150, 250, 16, 12, '#3b82f6');
-  if (!v) { line(ctx, 150, 258, 190, 258, '#fff', 2); line(ctx, 150, 266, 190, 266, '#fff', 2); }
-  // astronaut (FLIPPED in right panel)
-  ctx.save(); ctx.translate(200, 305); ctx.scale(v ? -1 : 1, 1);
-  ellipse(ctx, 0, 0, 16, 20, '#f5f0e6');
-  circle(ctx, 0, -26, 11, '#f5f0e6'); circle(ctx, 3, -27, 7, '#7cc7e8');
-  rect(ctx, -12, -6, 8, 10, '#3b82f6'); // chest pack
-  line(ctx, -10, 16, -14, 32, '#f5f0e6', 6); line(ctx, 8, 16, 12, 32, '#f5f0e6', 6);
-  line(ctx, -14, -8, -24, 2, '#f5f0e6', 5); line(ctx, 14, -8, 24, -14, '#f5f0e6', 5);
-  ctx.restore();
-  // rover (MOVED right in right panel)
-  const rx = v ? 385 : 350;
-  ctx.save(); ctx.translate(rx, 325);
-  rect(ctx, -26, -14, 52, 16, '#9a9a9a'); rect(ctx, -18, -26, 22, 12, '#7a7a7a');
-  circle(ctx, -16, 6, 8, '#333'); circle(ctx, 14, 6, 8, '#333');
-  line(ctx, 10, -26, 22, -38, '#c0c0c0', 3); circle(ctx, 22, -38, 4, '#ffd700');
-  ctx.restore();
-  // rocks (one REMOVED in right panel)
-  ellipse(ctx, 300, 372, 14, 7, '#a8a8a8'); ellipse(ctx, 340, 378, 10, 5, '#a8a8a8');
-  if (!v) ellipse(ctx, 180, 374, 12, 6, '#a8a8a8');
-  // footprints
-  for (let i = 0; i < 5; i++) ellipse(ctx, 230 + i * 12, 352 + (i % 2) * 5, 4, 2.5, '#a8a8a8');
+  // lantern strings (background)
+  line(ctx, 0, 100, W, 80, '#3a3a3a', 2);
+  for (let lx = 60; lx < 620; lx += 90) {
+    ellipse(ctx, lx, 112, 10, 13, lx % 180 === 60 ? '#ff5a3c' : '#ffd700');
+    line(ctx, lx, 100, lx, 100, '#3a3a3a', 1);
+  }
+  // big lantern (RESIZED bigger in the right panel)
+  const blR = v ? 24 : 16;
+  ellipse(ctx, 480, 130, blR, blR * 1.25, '#ff5a3c');
+  ellipse(ctx, 480, 130, blR * 0.55, blR * 0.8, '#ffd700');
+  line(ctx, 480, 108, 480, 96, '#3a3a3a', 2);
+  // ground
+  ground(ctx, 300, W, H, '#3a2a5e', '#241a3e');
+  // stage (midground, left) — banner RECOLOURED in the right panel
+  rect(ctx, 80, 280, 170, 12, '#8b5a2b'); rect(ctx, 88, 292, 8, 40, '#6b4a2a'); rect(ctx, 234, 292, 8, 40, '#6b4a2a');
+  rect(ctx, 100, 222, 120, 22, v ? '#8b5cf6' : '#e74c3c');
+  text(ctx, 'FESTIVAL', 160, 233, 13, '#f5f0e6');
+  // musician with a drum on the stage — drum REMOVED in the right panel
+  person(ctx, { x: 160, y: 280, s: 0.95, skin: '#e8b88a', shirt: '#facc15', pants: '#2e4a6b', hair: '#222', pose: 'stand', dir: 1 });
+  if (!v) {
+    ellipse(ctx, 188, 288, 14, 10, '#c0392b'); ellipse(ctx, 188, 280, 14, 5, '#f5f0e6');
+    line(ctx, 172, 278, 164, 266, '#8b5a2b', 3); line(ctx, 204, 278, 212, 266, '#8b5a2b', 3);
+  }
+  // food stall (midground, right) + vendor — apron RECOLOURED in the right panel
+  rect(ctx, 420, 300, 140, 10, '#8b5a2b'); rect(ctx, 428, 310, 8, 34, '#6b4a2a'); rect(ctx, 544, 310, 8, 34, '#6b4a2a');
+  poly(ctx, [[415, 272], [435, 248], [545, 248], [565, 272]], '#e74c3c');
+  circle(ctx, 445, 292, 7, '#ff6fa0'); circle(ctx, 465, 290, 7, '#ffd700'); circle(ctx, 485, 292, 7, '#ff6fa0');
+  person(ctx, { x: 490, y: 300, s: 1.0, skin: '#f2c89b', shirt: v ? '#3b82f6' : '#e74c3c', pants: '#3a3a3a', hair: '#222', hat: '#f5f0e6', pose: 'stand', dir: -1 });
+  // crowd dancing (background, small) — one dancer REMOVED in the right panel
+  person(ctx, { x: 250, y: 292, s: 0.6, skin: '#f2c89b', shirt: '#ff8fb3', pants: '#2e4a6b', hair: '#5a3a21', pose: 'wave', dir: 1 });
+  if (!v) person(ctx, { x: 380, y: 288, s: 0.65, skin: '#e8b88a', shirt: '#2fae5f', pants: '#3a3a3a', hair: '#222', pose: 'wave', dir: -1 });
+  person(ctx, { x: 420, y: 292, s: 0.6, skin: '#f2c89b', shirt: '#8b5cf6', pants: '#2e4a6b', hair: '#222', pose: 'wave', dir: 1 });
+  // dancer with a fan (midground, centre) — fan RECOLOURED in the right panel
+  person(ctx, { x: 310, y: 302, s: 1.05, skin: '#f2c89b', shirt: '#e74c3c', dress: '#e74c3c', hair: '#222', pose: 'wave', dir: 1 });
+  ctx.fillStyle = v ? '#ffd700' : '#ff6fa0';
+  ctx.beginPath(); ctx.arc(335, 226, 12, Math.PI, 0); ctx.closePath(); ctx.fill();
+  line(ctx, 335, 226, 335, 240, '#8b5a2b', 2);
+  // kid with a lantern (foreground, big) — lantern MOVED in the right panel
+  person(ctx, { x: 90, y: 356, s: 1.1, skin: '#f2c89b', shirt: '#2fae5f', pants: '#2e4a6b', hair: '#222', pose: 'carry', dir: 1 });
+  const lkx = v ? 128 : 105;
+  ellipse(ctx, lkx, 312, 9, 12, '#ff5a3c');
+  ellipse(ctx, lkx, 312, 5, 8, '#ffd700');
+  line(ctx, lkx, 300, lkx, 296, '#3a3a3a', 2);
 }
 
-const MOON_DIFFS = [
-  { id: 'moo-star', type: 'removed', x: 60, y: 50, r: 14, hint: 'A star blinked out' },
-  { id: 'moo-flag', type: 'recoloured', x: 170, y: 262, r: 22, hint: 'The flag changed colour' },
-  { id: 'moo-rover', type: 'moved', x: 350, y: 325, r: 30, hint: 'The rover rolled sideways' },
-  { id: 'moo-crater', type: 'resized', x: 250, y: 352, r: 28, hint: 'A crater grew wider' },
-  { id: 'moo-astro', type: 'flipped', x: 200, y: 305, r: 28, hint: 'The astronaut turned around' },
-  { id: 'moo-sat', type: 'added', x: 421, y: 88, r: 22, hint: 'A satellite appeared in the sky' },
-  { id: 'moo-panel', type: 'recoloured', x: 510, y: 288, r: 26, hint: 'A solar panel changed colour' },
-  { id: 'moo-rock', type: 'removed', x: 180, y: 374, r: 16, hint: 'A rock is missing from the dust' },
+const FESTIVAL_DIFFS = [
+  { id: 'fes-fan', type: 'recoloured', x: 335, y: 226, r: 18, hint: 'The dancer\u2019s fan changed colour' },
+  { id: 'fes-drum', type: 'removed', x: 188, y: 284, r: 20, hint: 'The musician\u2019s drum is gone' },
+  { id: 'fes-lantern', type: 'moved', x: 105, y: 312, r: 24, hint: 'The kid\u2019s lantern moved to the other hand' },
+  { id: 'fes-apron', type: 'recoloured', x: 490, y: 262, r: 22, hint: 'The food vendor\u2019s apron changed colour' },
+  { id: 'fes-crowd', type: 'removed', x: 380, y: 252, r: 20, hint: 'A dancer left the crowd' },
+  { id: 'fes-biglantern', type: 'resized', x: 480, y: 130, r: 26, hint: 'The big lantern grew bigger' },
+  { id: 'fes-banner', type: 'recoloured', x: 160, y: 233, r: 24, hint: 'The stage banner changed colour' },
+  { id: 'fes-firework', type: 'added', x: 150, y: 80, r: 20, hint: 'A firework burst in the sky' },
 ];
 
-// ---- Scene 6: Botanical Greenhouse ----
-function drawGreenhouse(ctx, v, W, H) {
-  // sky through glass
-  ctx.fillStyle = grad(ctx, 0, 0, 0, H, [[0, '#bfe8ff'], [0.5, '#d8f3dc'], [1, '#e9f7ef']]);
+// ---- Scene 6: Cozy Café ----
+function drawCafe(ctx, v, W, H) {
+  // warm interior wall
+  ctx.fillStyle = grad(ctx, 0, 0, 0, H, [[0, '#f7e3c0'], [0.6, '#eecfa0'], [1, '#dfb57e']]);
   ctx.fillRect(0, 0, W, H);
-  circle(ctx, 520, 70, 28, '#ffdf6b');
-  // glass dome frame
-  ctx.strokeStyle = '#5a7d5a'; ctx.lineWidth = 5;
-  ctx.beginPath(); ctx.moveTo(20, 340); ctx.quadraticCurveTo(310, 20, 600, 340); ctx.stroke();
-  for (let i = 1; i < 5; i++) {
-    const a = Math.PI * i / 5;
-    const x = 310 - Math.cos(a) * 290, y = 340 - Math.sin(a) * 320;
-    line(ctx, 310, 340, x, y, '#5a7d5a', 3);
-  }
-  line(ctx, 20, 340, 600, 340, '#5a7d5a', 5);
-  // path
-  ctx.fillStyle = '#d9c9a8'; ctx.beginPath(); ctx.moveTo(260, 400); ctx.lineTo(300, 340); ctx.lineTo(340, 340); ctx.lineTo(380, 400); ctx.closePath(); ctx.fill();
-  // hanging vines
-  for (const [vx, vl] of [[120, 70], [240, 95], [480, 80]]) {
-    ctx.strokeStyle = '#2f7a33'; ctx.lineWidth = 4; ctx.lineCap = 'round';
-    ctx.beginPath(); ctx.moveTo(vx, 60); ctx.quadraticCurveTo(vx + 8, 60 + vl * 0.5, vx - 4, 60 + vl); ctx.stroke();
-    ellipse(ctx, vx + 2, 60 + vl * 0.6, 7, 4, '#3d9b4f');
-  }
-  // potted plants (one pot RESIZED bigger in right panel)
-  const pot = (px, py, s, flowerC) => {
-    ctx.save(); ctx.translate(px, py); ctx.scale(s, s);
-    ctx.strokeStyle = '#2f7a33'; ctx.lineWidth = 4; ctx.lineCap = 'round';
-    line(ctx, 0, 0, -8, -26, '#2f7a33', 4); line(ctx, 0, 0, 8, -30, '#2f7a33', 4); line(ctx, 0, 0, 0, -34, '#2f7a33', 4);
-    ellipse(ctx, -8, -28, 7, 4, '#3d9b4f'); ellipse(ctx, 8, -32, 7, 4, '#3d9b4f');
-    if (flowerC) { circle(ctx, 0, -38, 6, flowerC); circle(ctx, 0, -38, 2.5, '#ffd700'); }
-    poly(ctx, [[-14, 0], [14, 0], [10, 18], [-10, 18]], '#c96f3b');
-    ctx.restore();
-  };
-  pot(100, 330, 1, '#ff6fa0');
-  pot(200, 330, 1, v ? '#3b82f6' : '#e74c3c'); // flower RECOLOURED blue in right panel
-  pot(300, 330, 1, '#ffd700');
-  pot(400, 330, v ? 1.5 : 1, '#ff6fa0');
-  pot(500, 330, 1, '#8b5cf6');
-  // leaf (RECOLOURED yellow in right panel) on the middle plant
-  ellipse(ctx, 300, 296, 12, 6, v ? '#ffd700' : '#2f9e4f');
-  // watering can (MOVED right in right panel)
-  const wx = v ? 185 : 150;
-  ctx.save(); ctx.translate(wx, 325);
-  rect(ctx, -14, -12, 26, 20, '#3d9b4f'); poly(ctx, [[12, -8], [24, -16], [24, -10], [12, -2]], '#2f7a33');
-  ctx.beginPath(); ctx.arc(-16, -4, 8, Math.PI * 0.5, Math.PI * 1.5); ctx.strokeStyle = '#2f7a33'; ctx.lineWidth = 4; ctx.stroke();
-  ctx.restore();
-  // bench (REMOVED in right panel)
+  // window (background, left) with a street view — curtain RECOLOURED in the right panel
+  rect(ctx, 60, 80, 160, 150, '#bfe8ff', '#8b5a2b', 5);
+  rect(ctx, 80, 200, 50, 30, '#c97b4a'); rect(ctx, 150, 190, 60, 40, '#5a8a6b');
+  circle(ctx, 200, 110, 16, '#ffdf6b');
+  rect(ctx, 56, 76, 16, 158, v ? '#2bb3a3' : '#e74c3c'); // curtain
+  rect(ctx, 208, 76, 16, 158, v ? '#2bb3a3' : '#e74c3c');
+  // wall clock (REMOVED in the right panel)
   if (!v) {
-    rect(ctx, 330, 340, 70, 8, '#8b5a2b'); rect(ctx, 336, 348, 6, 18, '#6b4a2a'); rect(ctx, 388, 348, 6, 18, '#6b4a2a');
-    rect(ctx, 330, 322, 70, 6, '#8b5a2b');
+    circle(ctx, 520, 110, 20, '#f5f0e6', '#2b2b26', 3);
+    line(ctx, 520, 110, 520, 96, '#2b2b26', 2); line(ctx, 520, 110, 530, 114, '#2b2b26', 2);
   }
-  // fountain
-  ellipse(ctx, 310, 360, 34, 10, '#7cc7e8'); rect(ctx, 304, 330, 12, 26, '#9a9a9a');
-  circle(ctx, 310, 326, 6, '#7cc7e8');
-  // butterfly (REMOVED in right panel)
-  if (!v) {
-    ctx.save(); ctx.translate(250, 150);
-    ellipse(ctx, -8, 0, 10, 7, '#ff8c42'); ellipse(ctx, 8, 0, 10, 7, '#ff8c42');
-    ellipse(ctx, -8, 6, 7, 5, '#ffd700'); ellipse(ctx, 8, 6, 7, 5, '#ffd700');
-    line(ctx, 0, -6, 0, 6, '#5a4632', 2);
-    ctx.restore();
-  }
-  // bee (FLIPPED in right panel)
-  ctx.save(); ctx.translate(450, 180); ctx.scale(v ? -1 : 1, 1);
-  ellipse(ctx, 0, 0, 12, 8, '#ffd700');
-  line(ctx, -3, -7, -3, 7, '#222', 2); line(ctx, 3, -7, 3, 7, '#222', 2);
-  circle(ctx, 12, -2, 5, '#222'); circle(ctx, 13, -3, 1.5, '#fff');
-  ellipse(ctx, -2, -10, 7, 4, 'rgba(255,255,255,0.8)');
-  ctx.restore();
-  // bird ADDED in right panel
+  // plant ADDED in the right panel, by the window
   if (v) {
-    ctx.strokeStyle = '#5a4632'; ctx.lineWidth = 3; ctx.lineCap = 'round';
-    ctx.beginPath(); ctx.moveTo(510, 120); ctx.quadraticCurveTo(516, 113, 522, 120);
-    ctx.quadraticCurveTo(528, 113, 534, 120); ctx.stroke();
+    ctx.strokeStyle = '#2f7a33'; ctx.lineWidth = 4; ctx.lineCap = 'round';
+    line(ctx, 250, 230, 242, 200, '#2f7a33', 4); line(ctx, 250, 230, 250, 196, '#2f7a33', 4); line(ctx, 250, 230, 258, 202, '#2f7a33', 4);
+    ellipse(ctx, 242, 198, 8, 5, '#3d9b4f'); ellipse(ctx, 250, 194, 8, 5, '#3d9b4f'); ellipse(ctx, 258, 200, 8, 5, '#3d9b4f');
+    poly(ctx, [[240, 230], [260, 230], [256, 246], [244, 246]], '#c96f3b');
   }
+  // wooden floor (foreground plane)
+  ground(ctx, 300, W, H, '#d9b98a', '#b98f5f');
+  // counter (midground, right) + barista — apron RECOLOURED in the right panel
+  rect(ctx, 400, 280, 200, 60, '#8b5a2b'); rect(ctx, 400, 280, 200, 10, '#a06a35');
+  rect(ctx, 420, 300, 30, 24, '#f5f0e6'); rect(ctx, 470, 300, 30, 24, '#f5f0e6'); rect(ctx, 520, 300, 30, 24, '#f5f0e6');
+  person(ctx, { x: 500, y: 282, s: 1.0, skin: '#e8b88a', shirt: v ? '#2fae5f' : '#8b5a2b', pants: '#3a3a3a', hair: '#222', hat: '#f5f0e6', pose: 'stand', dir: -1 });
+  // window table + man with coffee (midground) — cup MOVED in the right panel
+  ellipse(ctx, 220, 296, 46, 8, '#6b4a2a');
+  rect(ctx, 214, 304, 6, 30, '#6b4a2a'); rect(ctx, 226, 304, 6, 30, '#6b4a2a');
+  person(ctx, { x: 185, y: 300, s: 0.85, skin: '#f2c89b', shirt: '#5a6a8a', pants: '#3a3a3a', hair: '#d9d9d9', pose: 'sit', dir: 1 });
+  const cupx = v ? 215 : 240;
+  rect(ctx, cupx - 6, 282, 12, 12, '#f5f0e6'); rect(ctx, cupx + 6, 286, 5, 6, '#f5f0e6');
+  // reading table (midground, left) + woman — book FLIPPED in the right panel
+  ellipse(ctx, 120, 316, 52, 9, '#6b4a2a');
+  rect(ctx, 112, 324, 6, 34, '#6b4a2a'); rect(ctx, 128, 324, 6, 34, '#6b4a2a');
+  person(ctx, { x: 150, y: 318, s: 0.95, skin: '#f2c89b', shirt: '#8b5cf6', dress: '#8b5cf6', hair: '#5a3a21', pose: 'sit', dir: -1 });
+  ctx.save(); ctx.translate(132, 272); ctx.rotate(v ? 0.3 : -0.3);
+  rect(ctx, -13, -11, 26, 22, '#3b82f6'); line(ctx, 0, -11, 0, 11, '#f5f0e6', 2); ctx.restore();
+  // waiter with a tray (foreground, big) — tray REMOVED in the right panel
+  person(ctx, { x: 300, y: 352, s: 1.15, skin: '#e8b88a', shirt: '#2e4a6b', pants: '#2e4a6b', hair: '#222', pose: 'carry', dir: 1 });
+  if (!v) {
+    ellipse(ctx, 318, 312, 20, 6, '#c0c0c8');
+    rect(ctx, 310, 304, 8, 8, '#f5f0e6'); rect(ctx, 322, 304, 8, 8, '#e74c3c');
+  }
+  // kid with a cake (foreground, right) — cake RESIZED bigger in the right panel
+  person(ctx, { x: 450, y: 356, s: 0.9, skin: '#f2c89b', shirt: '#facc15', pants: '#e74c3c', hair: '#222', pose: 'sit', dir: -1 });
+  const ckR = v ? 13 : 8;
+  ellipse(ctx, 470, 342, ckR, ckR * 0.8, '#ff8fb3');
+  rect(ctx, 470 - ckR, 342, ckR * 2, 8, '#e74c3c');
+  circle(ctx, 470, 334, 3, '#ffd700');
 }
 
-const GREEN_DIFFS = [
-  { id: 'gre-butterfly', type: 'removed', x: 250, y: 150, r: 20, hint: 'A butterfly flew away' },
-  { id: 'gre-flower', type: 'recoloured', x: 200, y: 292, r: 14, hint: 'A flower changed colour' },
-  { id: 'gre-can', type: 'moved', x: 150, y: 325, r: 24, hint: 'The watering can moved' },
-  { id: 'gre-pot', type: 'resized', x: 400, y: 330, r: 26, hint: 'A pot grew bigger' },
-  { id: 'gre-bee', type: 'flipped', x: 450, y: 180, r: 18, hint: 'The bee turned around' },
-  { id: 'gre-bird', type: 'added', x: 522, y: 118, r: 16, hint: 'A bird appeared in the sky' },
-  { id: 'gre-leaf', type: 'recoloured', x: 300, y: 296, r: 14, hint: 'A leaf turned yellow' },
-  { id: 'gre-bench', type: 'removed', x: 365, y: 340, r: 30, hint: 'The bench is gone' },
+const CAFE_DIFFS = [
+  { id: 'caf-apron', type: 'recoloured', x: 500, y: 244, r: 22, hint: 'The barista\u2019s apron changed colour' },
+  { id: 'caf-tray', type: 'removed', x: 318, y: 310, r: 20, hint: 'The waiter\u2019s tray is gone' },
+  { id: 'caf-book', type: 'flipped', x: 132, y: 272, r: 18, hint: 'The reader\u2019s book flipped over' },
+  { id: 'caf-cup', type: 'moved', x: 240, y: 288, r: 26, hint: 'The coffee cup moved across the table' },
+  { id: 'caf-cake', type: 'resized', x: 470, y: 340, r: 20, hint: 'The kid\u2019s cake grew bigger' },
+  { id: 'caf-curtain', type: 'recoloured', x: 64, y: 150, r: 24, hint: 'The window curtain changed colour' },
+  { id: 'caf-clock', type: 'removed', x: 520, y: 110, r: 20, hint: 'The wall clock is gone' },
+  { id: 'caf-plant', type: 'added', x: 250, y: 210, r: 18, hint: 'A plant appeared by the window' },
 ];
 
 // ---- catalogue ----
 export const SCENES = [
-  { id: 'reef', name: 'Coral Reef Dive', sub: 'Underwater · 8 differences', draw: drawReef, diffs: REEF_DIFFS },
-  { id: 'village', name: 'Winter Village', sub: 'Snowy night · 8 differences', draw: drawVillage, diffs: VILLAGE_DIFFS },
-  { id: 'temple', name: 'Jungle Temple', sub: 'Ancient ruins · 8 differences', draw: drawTemple, diffs: TEMPLE_DIFFS },
-  { id: 'oasis', name: 'Desert Oasis', sub: 'Golden dunes · 8 differences', draw: drawOasis, diffs: OASIS_DIFFS },
-  { id: 'moon', name: 'Moon Base', sub: 'Lunar surface · 8 differences', draw: drawMoon, diffs: MOON_DIFFS },
-  { id: 'green', name: 'Botanical Greenhouse', sub: 'Glass dome · 8 differences', draw: drawGreenhouse, diffs: GREEN_DIFFS },
+  { id: 'market', name: 'Street Market', sub: 'Busy stalls · 8 differences', draw: drawMarket, diffs: MARKET_DIFFS },
+  { id: 'beach', name: 'Beach Day', sub: 'Sunny shore · 8 differences', draw: drawBeach, diffs: BEACH_DIFFS },
+  { id: 'park', name: 'City Park', sub: 'Green afternoon · 8 differences', draw: drawPark, diffs: PARK_DIFFS },
+  { id: 'station', name: 'Train Station', sub: 'Platform rush · 8 differences', draw: drawStation, diffs: STATION_DIFFS },
+  { id: 'festival', name: 'Night Festival', sub: 'Lanterns & music · 8 differences', draw: drawFestival, diffs: FESTIVAL_DIFFS },
+  { id: 'cafe', name: 'Cozy Café', sub: 'Warm morning · 8 differences', draw: drawCafe, diffs: CAFE_DIFFS },
 ];
 export const TOTAL_DIFFS = SCENES.reduce((n, s) => n + s.diffs.length, 0);

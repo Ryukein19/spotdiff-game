@@ -295,7 +295,7 @@ class Game {
       this.score = 940; this.streak = 8; this.bestStreak = 8;
       this.timer.left = 41; this.onTick(41, TIME_PER_SCENE);
       this.renderAll(); this.updateHUD();
-      this.showOverlay('Scene cleared!', 'All 8 differences found — time bonus +205. Next up: Winter Village.', '→ Next scene', 'next');
+      this.showOverlay('Scene cleared!', 'All 8 differences found — time bonus +205. Next up: Beach Day.', '→ Next scene', 'next');
     } else if (shot === 'howto') {
       this.showHow(true);
     }
