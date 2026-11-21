@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<title>Double Take — Spot the Difference</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <div class="logo">🔍</div>
+    <div>
+      <h1>Double Take</h1>
+      <p class="tagline">Spot the difference — 6 scenes · 48 differences</p>
+    </div>
+  </div>
+  <div class="hud">
+    <div class="stat remain"><span class="big" id="remain-num">8</span><span class="lbl">to find</span></div>
+    <div class="stat"><span class="big" id="found-num">0 / 8</span><span class="lbl">found</span></div>
+    <div class="stat"><span class="big" id="score-num">0</span><span class="lbl">score</span></div>
+    <div class="stat"><span class="big" id="streak-num">x0</span><span class="lbl">streak</span></div>
+    <div class="timer">
+      <div class="time-row"><span id="time-num">120s</span><span class="lbl">left</span></div>
+      <div class="time-track"><div class="time-bar" id="time-bar"></div></div>
+    </div>
+    <div class="actions">
+      <button id="btn-hint" title="Hint (H)">💡 Hint (<span id="hint-num">3</span>)</button>
+      <button id="btn-lens" title="Toggle magnifier (L)">🔍 Lens on</button>
+      <button id="btn-pause" title="Pause (P)">⏸ Pause</button>
+      <button id="btn-restart" title="Restart scene (R)">↻ Restart</button>
+      <button id="btn-next" title="Next scene (N)">→ Next</button>
+      <button id="btn-how" title="How to play">❓ How to play</button>
+    </div>
+  </div>
+</header>
+
+<div class="scene-bar">
+  <div class="scene-title"><strong id="scene-name">Coral Reef Dive</strong> <span id="scene-sub">Underwater · 8 differences</span></div>
+  <div class="dots" id="dots" title="Progress — one dot per difference"></div>
+  <div class="pause-note" id="pause-note" style="display:none">⏸ Paused — press P or Resume to continue</div>
+</div>
+
+<main class="boards">
+  <section class="board-wrap">
+    <div class="board-label left">◀ LEFT · Original</div>
+    <canvas id="panel-left" width="620" height="400"></canvas>
+    <div class="float-host" id="float-left"></div>
+  </section>
+  <section class="board-wrap">
+    <div class="board-label right">RIGHT · Changed ▶</div>
+    <canvas id="panel-right" width="620" height="400"></canvas>
+    <div class="float-host" id="float-right"></div>
+  </section>
+</main>
+
+<nav class="levels" aria-label="Scenes">
+  <button class="level-btn active" data-scene="0">1 · Coral Reef</button>
+  <button class="level-btn" data-scene="1">2 · Winter Village</button>
+  <button class="level-btn" data-scene="2">3 · Jungle Temple</button>
+  <button class="level-btn" data-scene="3">4 · Desert Oasis</button>
+  <button class="level-btn" data-scene="4">5 · Moon Base</button>
+  <button class="level-btn" data-scene="5">6 · Greenhouse</button>
+</nav>
+
+<section class="howto" id="howto">
+  <h2>How to play</h2>
+  <button class="how-close" id="how-close" aria-label="Close">✕</button>
+  <ul>
+    <li><strong>Click a difference on either picture.</strong> Found ones get a gold circle on <em>both</em> panels and a green check.</li>
+    <li><strong>Find them all before the timer empties.</strong> A wrong guess costs <strong>−5s</strong> and breaks your streak.</li>
+    <li><strong>Streaks pay:</strong> each find is +100, plus +25 per streak step. Clearing a scene banks +5 per second left.</li>
+    <li><strong>Stuck?</strong> 💡 Hint (H) pulses one unfound difference — 3 per scene. 🔍 Lens (L) magnifies under your cursor.</li>
+    <li><strong>Keyboard:</strong> arrows move the crosshair · Enter guesses · Tab switches picture · H hint · L lens · N next scene · R restart · 1–6 pick a scene · P pause.</li>
+    <li>Differences are fair: something removed, recoloured, moved, resized, flipped, or added. 48 in total across 6 scenes, harder as you go.</li>
+  </ul>
+</section>
+
+<div class="overlay" id="overlay" style="display:none">
+  <div class="overlay-card">
+    <h2 id="overlay-title">Scene cleared!</h2>
+    <p id="overlay-body"></p>
+    <button id="overlay-btn">→ Next scene</button>
+  </div>
+</div>
+
+<canvas id="lens" width="170" height="170" style="display:none"></canvas>
+
+<footer class="foot">
+  Double Take — an original spot-the-difference game. All art is drawn in code; no images, no network, plays offline.
+  Keyboard: arrows · Enter · Tab · H · L · N · R · 1–6 · P.
+</footer>
+
+<script type="module" src="src/main.js"></script>
+</body>
+</html>
